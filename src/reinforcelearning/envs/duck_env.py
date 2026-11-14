@@ -126,7 +126,8 @@ class DuckEnv(gymnasium.Env):
         self._warning_count = self._physics_warning_count()
 
         mujoco.mj_forward(self.model, self.data)
-        return self._get_obs(), self._build_info(termination_reason=None)
+        info = self._build_info(state=self._current_state(), contacts=self._contact_flags())
+        return self._get_obs(), info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         cfg = self.config
@@ -147,15 +148,18 @@ class DuckEnv(gymnasium.Env):
         self._step_count += 1
 
         state = self._current_state()
+        contacts = self._contact_flags()
         reward, reward_terms = self._compute_reward(action, state)
-        terminated, reason = self._check_termination(state)
+        terminated, reason = self._check_termination(state, contacts)
         truncated = (not terminated) and self._step_count >= cfg.max_episode_steps
         if truncated:
             reason = "timeout"
 
         self._last_action = action
         obs = self._get_obs(state)
-        info = self._build_info(reward_terms=reward_terms, termination_reason=reason)
+        info = self._build_info(
+            state=state, contacts=contacts, reward_terms=reward_terms, termination_reason=reason
+        )
         return obs, float(reward), bool(terminated), bool(truncated), info
 
     def render(self) -> np.ndarray | None:
@@ -247,12 +251,14 @@ class DuckEnv(gymnasium.Env):
         }
         return float(sum(terms.values())), terms
 
-    def _check_termination(self, state: dict[str, Any]) -> tuple[bool, str | None]:
+    def _check_termination(
+        self, state: dict[str, Any], contacts: tuple[bool, bool, bool]
+    ) -> tuple[bool, str | None]:
         if self._physics_warning_count() > self._warning_count or not (
             np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all()
         ):
             return True, "non_finite"
-        _, _, fall = self._contact_flags()
+        fall = contacts[2]
         if fall:
             return True, "fall_contact"
         if state["tilt_angle"] > self.config.max_tilt:
@@ -286,11 +292,12 @@ class DuckEnv(gymnasium.Env):
 
     def _build_info(
         self,
+        state: dict[str, Any],
+        contacts: tuple[bool, bool, bool],
         reward_terms: dict[str, float] | None = None,
         termination_reason: str | None = None,
     ) -> dict[str, Any]:
-        state = self._current_state()
-        left_contact, right_contact, _ = self._contact_flags()
+        left_contact, right_contact, _ = contacts
         info: dict[str, Any] = {
             "forward_speed": float(state["lin_vel"][0]),
             "lateral_speed": float(state["lin_vel"][1]),
