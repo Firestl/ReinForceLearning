@@ -134,12 +134,8 @@ class DuckEnvConfig:
                 "否则新回合会立即触发 too_low 终止"
             )
 
-        if len(self.command_range) != 2 or not all(
-            math.isfinite(v) for v in self.command_range
-        ):
-            raise ValueError(
-                f"command_range 应为两个有限数 (low, high)，实际 {self.command_range}"
-            )
+        if len(self.command_range) != 2 or not all(math.isfinite(v) for v in self.command_range):
+            raise ValueError(f"command_range 应为两个有限数 (low, high)，实际 {self.command_range}")
         if self.command_range[0] > self.command_range[1]:
             raise ValueError(f"command_range 应满足 low <= high，实际 {self.command_range}")
 
