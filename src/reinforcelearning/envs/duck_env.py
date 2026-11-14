@@ -105,10 +105,10 @@ class DuckEnv(gymnasium.Env):
 
         mujoco.mj_resetData(self.model, self.data)
 
-        # 根节点：默认站姿高度 + 随机朝向（绕 z 轴 ±pi）
+        # 根节点：初始站立高度 + 随机朝向（绕 z 轴 ±pi）
         yaw = self.np_random.uniform(-np.pi, np.pi)
         self.data.qpos[0:3] = 0.0
-        self.data.qpos[2] = cfg.reward.height_target
+        self.data.qpos[2] = cfg.spawn_height
         self.data.qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
 
         # 关节默认姿态 + 小幅噪声；速度置零 + 极小噪声

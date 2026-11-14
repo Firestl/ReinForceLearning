@@ -66,6 +66,7 @@ class DuckEnvConfig:
 
     command_range: tuple[float, float] = (0.0, 1.0)
 
+    spawn_height: float = 0.233  # 重置时的初始 root 高度；与奖励的 height_target 解耦
     fall_height: float = 0.15
     max_tilt: float = math.radians(60.0)
 
@@ -87,7 +88,14 @@ class DuckEnvConfig:
             if len(value) != n:
                 raise ValueError(f"{name} 应有 {n} 项，实际 {len(value)} 项")
         if len(self.command_range) != 2 or self.command_range[0] > self.command_range[1]:
-            raise ValueError(f"command_range 应为 (low, high) 且 low <= high，实际 {self.command_range}")
+            raise ValueError(
+                f"command_range 应为 (low, high) 且 low <= high，实际 {self.command_range}"
+            )
+        if self.spawn_height <= self.fall_height:
+            raise ValueError(
+                f"spawn_height({self.spawn_height}) 必须大于 fall_height({self.fall_height})，"
+                "否则新回合会立即触发 too_low 终止"
+            )
 
     @property
     def action_dim(self) -> int:
