@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import gymnasium
 import mujoco
@@ -37,11 +37,7 @@ _REWARD_TERM_KEYS = (
 class DuckEnv(gymnasium.Env):
     """平地直线行走的鸭形双足环境（位置执行器、本体感知观测）。"""
 
-    metadata = {
-        "render_modes": ["human", "rgb_array"],
-        # 默认 config.control_dt = 0.02 s 对应 50 Hz
-        "render_fps": 50,
-    }
+    metadata: ClassVar[dict[str, Any]] = {"render_modes": ["human", "rgb_array"]}
 
     def __init__(
         self,
@@ -49,15 +45,20 @@ class DuckEnv(gymnasium.Env):
         *,
         render_mode: str | None = None,
     ) -> None:
+        self.config = config if config is not None else DuckEnvConfig()
+        cfg = self.config
+
+        # 实例级 metadata：render_fps 按实际控制周期推导，避免与 frame_skip/sim_dt 脱节
+        self.metadata = {**type(self).metadata, "render_fps": round(1.0 / cfg.control_dt)}
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(
                 f"不支持的 render_mode={render_mode!r}，可选 {self.metadata['render_modes']}"
             )
         self.render_mode = render_mode
-        self.config = config if config is not None else DuckEnvConfig()
-        cfg = self.config
 
         self.model = mujoco.MjModel.from_xml_path(str(cfg.model_path))
+        # sim_dt 是物理步长的唯一来源，覆盖 XML 中的 timestep
+        self.model.opt.timestep = cfg.sim_dt
         self.data = mujoco.MjData(self.model)
         self._validate_model()
 
