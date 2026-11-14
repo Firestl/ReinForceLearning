@@ -16,6 +16,8 @@
 | `episode_seconds` | 20.0 s | 每回合 1000 个控制步 |
 | `max_episode_steps` | 1000 | 超时使用 `truncated=True` |
 
+`DuckEnv` 启动时会把 `DuckEnvConfig.sim_dt` 写入 `model.opt.timestep`，配置中的 `sim_dt` 是物理步长的唯一来源（XML 中的值在环境运行时被覆盖）；`render_fps` 由 `sim_dt × frame_skip` 推导。
+
 每个 `step(action)` 的流程：
 
 ```text
