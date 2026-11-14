@@ -13,6 +13,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
 import reinforcelearning.envs  # noqa: F401  导入即注册 Duck-v0
 from reinforcelearning.envs.config import DuckEnvConfig
+from reinforcelearning.training.vec_normalize import DuckVecNormalize
 
 ENV_ID = "Duck-v0"
 
@@ -36,8 +37,12 @@ def make_vec_env(
     n_envs: int,
     seed: int,
     env_config: DuckEnvConfig | None = None,
+    render_mode: str | None = None,
+    normalize: bool = True,
+    norm_reward: bool = True,
+    gamma: float = 0.99,
 ) -> VecEnv:
-    """创建 ``n_envs`` 个并行环境。
+    """创建 ``n_envs`` 个并行环境；``normalize=True`` 时套上 ``DuckVecNormalize``。
 
     第一版用 ``DummyVecEnv``（同进程顺序执行）：MuJoCo 单步开销小，
     多进程带来的序列化与调试成本不划算。需要吞吐时再换 ``SubprocVecEnv``。
@@ -46,7 +51,17 @@ def make_vec_env(
         raise ValueError(f"n_envs 必须为 >= 1 的整数，实际 {n_envs}")
 
     thunks: list[Callable[[], gymnasium.Env]] = [
-        lambda rank=rank: make_env(seed=seed + rank, env_config=env_config)
+        lambda rank=rank: make_env(seed=seed + rank, env_config=env_config, render_mode=render_mode)
         for rank in range(n_envs)
     ]
-    return DummyVecEnv(thunks)
+    vec_env: VecEnv = DummyVecEnv(thunks)
+    if not normalize:
+        return vec_env
+
+    config = env_config if env_config is not None else DuckEnvConfig()
+    return DuckVecNormalize(
+        vec_env,
+        command_obs_index=config.obs_dim - 1,
+        norm_reward=norm_reward,
+        gamma=gamma,
+    )
