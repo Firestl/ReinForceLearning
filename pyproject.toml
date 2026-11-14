@@ -6,8 +6,13 @@ readme = "README.md"
 authors = [
     { name = "Firestl", email = "ggstytt@gmail.com" }
 ]
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "gymnasium[mujoco]>=1.4.0",
+    "mujoco>=4.0.1",
+    "stable-baselines3[extra]>=2.9.2",
+    "torch>=2.15.0",
+]
 
 [project.scripts]
 reinforcelearning = "reinforcelearning:main"
@@ -15,3 +20,11 @@ reinforcelearning = "reinforcelearning:main"
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32'" }]
