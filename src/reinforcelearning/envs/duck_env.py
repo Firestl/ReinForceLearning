@@ -353,6 +353,16 @@ class DuckEnv(gymnasium.Env):
                 act_joint = self.model.actuator_trnid[i, 0]
                 if act_joint != jid:
                     errors.append(f"执行器顺序不符: 第 {i} 个执行器未驱动 {name}")
+                # 必须是 joint transmission 上的 position actuator（fixed gain + affine bias）；
+                # 例如误用 motor 时 ctrl 语义会从目标角变成力矩
+                if self.model.actuator_trntype[i] != mujoco.mjtTrn.mjTRN_JOINT:
+                    errors.append(f"执行器类型不符: 第 {i} 个执行器不是 joint transmission")
+                if self.model.actuator_gaintype[i] != mujoco.mjtGain.mjGAIN_FIXED:
+                    errors.append(f"执行器 gain 类型不符: 第 {i} 个执行器应为 fixed gain")
+                if self.model.actuator_biastype[i] != mujoco.mjtBias.mjBIAS_AFFINE:
+                    errors.append(
+                        f"执行器 bias 类型不符: 第 {i} 个执行器应为 affine bias（position actuator）"
+                    )
                 if not np.allclose(
                     self.model.actuator_ctrlrange[i], self.model.jnt_range[jid], atol=1e-9
                 ):
