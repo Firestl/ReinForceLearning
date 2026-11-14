@@ -363,12 +363,28 @@ class DuckEnv(gymnasium.Env):
                     errors.append(
                         f"执行器 bias 类型不符: 第 {i} 个执行器应为 affine bias（position actuator）"
                     )
-                if not np.allclose(
-                    self.model.actuator_ctrlrange[i], self.model.jnt_range[jid], atol=1e-9
-                ):
+                # ctrlrange 不得改变动作语义（docs/01 §6：与关节限位一致或略小）：
+                # 不超出关节限位，且覆盖环境可能写入的目标角范围
+                # （default ± action_scale 与限位内 margin 区间的交集），
+                # 否则 MuJoCo 会再次 clamp，动作映射被静默修改
+                ctrl_lo, ctrl_hi = self.model.actuator_ctrlrange[i]
+                target_low = max(
+                    cfg.default_joint_pos[i] - cfg.action_scale[i],
+                    cfg.joint_lower[i] + cfg.joint_limits_margin,
+                )
+                target_high = min(
+                    cfg.default_joint_pos[i] + cfg.action_scale[i],
+                    cfg.joint_upper[i] - cfg.joint_limits_margin,
+                )
+                if not (ctrl_lo <= target_low and ctrl_hi >= target_high):
                     errors.append(
-                        f"执行器 ctrlrange 与关节限位不符: {name} "
-                        f"model={self.model.actuator_ctrlrange[i]}"
+                        f"执行器 ctrlrange 不覆盖动作目标范围: {name} "
+                        f"model=[{ctrl_lo}, {ctrl_hi}]，需包含 [{target_low:.3f}, {target_high:.3f}]"
+                    )
+                if not (ctrl_lo >= cfg.joint_lower[i] and ctrl_hi <= cfg.joint_upper[i]):
+                    errors.append(
+                        f"执行器 ctrlrange 超出关节限位: {name} "
+                        f"model=[{ctrl_lo}, {ctrl_hi}]，限位=({cfg.joint_lower[i]}, {cfg.joint_upper[i]})"
                     )
 
         if errors:
