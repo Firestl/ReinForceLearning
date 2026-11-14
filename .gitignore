@@ -11,3 +11,6 @@ wheels/
 
 # MuJoCo runtime logs (written on physics warnings)
 MUJOCO_LOG.TXT
+
+# Local ZCode workspace/agent configuration
+.zcode/
