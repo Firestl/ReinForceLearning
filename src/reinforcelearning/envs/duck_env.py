@@ -9,7 +9,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from reinforcelearning.envs.config import JOINT_ORDER, DuckEnvConfig
+from reinforcelearning.envs.config import JOINT_AXES, JOINT_ORDER, DuckEnvConfig
 
 # 表示物理状态非有限的 MuJoCo 警告；数值异常时 MuJoCo 会自动重置 qpos，
 # 因此事后检查 qpos 的有限性不够，需要监视警告计数
@@ -74,7 +74,7 @@ class DuckEnv(gymnasium.Env):
         self._head_geom = self._geom_id("head_geom")
         self._left_foot_geom = self._geom_id("left_foot_geom")
         self._right_foot_geom = self._geom_id("right_foot_geom")
-        self._torso_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        self._torso_body = self._body_id("torso")
 
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(cfg.action_dim,), dtype=np.float32
@@ -133,6 +133,9 @@ class DuckEnv(gymnasium.Env):
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (cfg.action_dim,):
             raise ValueError(f"动作维度应为 {cfg.action_dim}，实际 shape={action.shape}")
+        if not np.isfinite(action).all():
+            # fail-fast：NaN/Inf 进入 ctrl 会产生 NaN 奖励/观测并污染训练 buffer
+            raise ValueError("action 含 NaN/Inf，拒绝执行")
         action = np.clip(action, -1.0, 1.0)
 
         # 归一化动作 -> 目标关节角 -> 限位内裁剪 -> 位置执行器
@@ -333,10 +336,23 @@ class DuckEnv(gymnasium.Env):
                 errors.append(
                     f"关节限位不符: {name} model={jnt_range}，config=({cfg.joint_lower[i]}, {cfg.joint_upper[i]})"
                 )
+            if self.model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_HINGE:
+                errors.append(f"关节类型不符: {name} 应为 hinge")
+            if not np.allclose(self.model.jnt_axis[jid], JOINT_AXES[i], atol=1e-9):
+                errors.append(
+                    f"关节轴不符: {name} model={self.model.jnt_axis[jid]}，期望 {JOINT_AXES[i]}"
+                )
             if self.model.nu > i:
                 act_joint = self.model.actuator_trnid[i, 0]
                 if act_joint != jid:
                     errors.append(f"执行器顺序不符: 第 {i} 个执行器未驱动 {name}")
+                if not np.allclose(
+                    self.model.actuator_ctrlrange[i], self.model.jnt_range[jid], atol=1e-9
+                ):
+                    errors.append(
+                        f"执行器 ctrlrange 与关节限位不符: {name} "
+                        f"model={self.model.actuator_ctrlrange[i]}"
+                    )
 
         if errors:
             raise ValueError("duck.xml 与 DuckEnvConfig 契约不一致:\n" + "\n".join(errors))
@@ -346,3 +362,10 @@ class DuckEnv(gymnasium.Env):
         if gid < 0:
             raise ValueError(f"模型缺少必需 geom: {name}")
         return gid
+
+    def _body_id(self, name: str) -> int:
+        bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if bid < 0:
+            # 不显式检查会拿到 -1，xmat[-1] 静默引用最后一个 body
+            raise ValueError(f"模型缺少必需 body: {name}")
+        return bid
