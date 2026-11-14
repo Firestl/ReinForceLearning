@@ -1,7 +1,8 @@
-# 最小 PPO 训练
+# 最小 PPO 训练与归一化
 
-本文记录 M3（PPO 冒烟训练）的实现方式、运行命令与验收结果。目标是验证
-**环境 → 向量化 → PPO → 保存 → 回放** 这条数据链，不追求步态质量。
+本文记录 M3（PPO 冒烟训练）与 M4 首项（`VecNormalize`）的实现方式、运行命令与
+验收结果。目标是验证 **环境 → 向量化/归一化 → PPO → 保存 → 回放** 这条数据链，
+并让优化过程稳定下来；步态质量仍待后续调优。
 
 ## 1. 代码结构
 
@@ -9,8 +10,9 @@
 src/reinforcelearning/
 ├── cli.py                    # argparse 入口：rl-train / rl-eval
 └── training/
-    ├── config.py             # TrainConfig：训练规模、种子、设备、输出路径
-    ├── env_factory.py        # Duck-v0 + Monitor + DummyVecEnv
+    ├── config.py             # TrainConfig：训练规模、种子、设备、gamma、归一化开关
+    ├── env_factory.py        # Duck-v0 + Monitor + DummyVecEnv + DuckVecNormalize
+    ├── vec_normalize.py      # 只归一化非 command 维度的 VecNormalize 子类
     └── runner.py             # build_model / train / evaluate
 ```
 
@@ -18,36 +20,46 @@ src/reinforcelearning/
 
 - `TrainConfig` 与 `DuckEnvConfig` 分离：前者描述一次实验，后者描述物理世界契约。
 - `env_factory` 是环境创建的唯一入口，训练与评估共用同一套包装，避免观测/终止语义漂移。
+- `DuckVecNormalize` 单独成文件：归一化规则（尤其 command 例外）是被保存进 `.pkl` 的契约。
 - `runner` 只做编排，不解析命令行；`cli` 只解析参数，不含训练逻辑。
 
 ## 2. 核心调用
 
-整条训练链在 SB3 里只有三行核心代码：
-
 ```python
-model = PPO("MlpPolicy", vec_env, device="cpu", seed=0)
+vec_env = make_vec_env(n_envs=4, seed=0)           # DummyVecEnv + DuckVecNormalize
+model = PPO("MlpPolicy", vec_env, device="cpu", gamma=0.99)
 model.learn(total_timesteps=100_000)
 model.save("models/duck_ppo.zip")
+vec_env.save("models/duck_ppo_vecnormalize.pkl")    # 统计量与模型成对保存
 ```
 
-回放：
+回放时必须加载同一份统计量并冻结：
 
 ```python
-model = PPO.load("models/duck_ppo", env=env, device="cpu")
-action, _ = model.predict(obs, deterministic=True)
+vec_env = make_vec_env(n_envs=1, seed=0, normalize=False)
+vec_env = DuckVecNormalize.load("models/duck_ppo_vecnormalize.pkl", vec_env)
+vec_env.training = False       # 冻结 obs 统计量
+vec_env.norm_reward = False    # 返回原始奖励
+model = PPO.load("models/duck_ppo", env=vec_env, device="cpu")
 ```
 
 ## 3. 运行命令
 
 ```bash
-# 训练（默认 100000 步、4 个并行环境、CPU）
+# 训练（默认 100000 步、4 个并行环境、CPU、开启归一化）
 uv run rl-train
 
 # 小规模冒烟：只跑一次 PPO 更新
 uv run rl-train --total-timesteps 4096 --n-envs 2 --model-path models/smoke_ppo
 
-# 评估：确定性策略回放
+# 关闭归一化（对照组）
+uv run rl-train --no-normalize --model-path models/duck_ppo_raw
+
+# 评估：自动加载模型旁的 *_vecnormalize.pkl
 uv run rl-eval models/duck_ppo --episodes 3
+
+# 忽略统计量，用原始观测评估
+uv run rl-eval models/duck_ppo --episodes 3 --raw
 
 # 打开 MuJoCo 窗口实时观看
 uv run rl-eval models/duck_ppo --episodes 1 --render
@@ -56,34 +68,55 @@ uv run rl-eval models/duck_ppo --episodes 1 --render
 uv run tensorboard --logdir runs
 ```
 
+模型与统计量命名规则：`<model>.zip` 与 `<model>_vecnormalize.pkl` 同目录。丢失 `.pkl`
+后策略看到的观测分布会改变，这是"训练正常、加载变傻"的最常见原因。
+
 ## 4. 关键决策
 
 | 决策 | 原因 |
 | --- | --- |
 | `DummyVecEnv` 而非 `SubprocVecEnv` | MuJoCo 单步开销小，同进程顺序执行更易调试；吞吐不足再换 |
-| 默认 `device="cpu"` | MLP 策略在 GPU 上反而更慢：实测 4096 步从 228 fps 提升到 1621 fps |
-| 暂不接 `VecNormalize` | 保持最小可读版本；归一化是下一阶段的第一优先级 |
+| 默认 `device="cpu"` | MLP 策略在 GPU 上反而更慢，实测见下方"设备与吞吐" |
+| `DuckVecNormalize` 不归一化 `command_speed` | 指令范围会随课程变化；若参与运行统计，策略对同一指令的理解会在训练中途漂移 |
+| 奖励归一化用折扣回报标准差 | SB3 的实现；`gamma` 必须与 PPO 一致，否则回报统计的时间尺度错误 |
+| `Monitor` 在里层、`VecNormalize` 在外层 | TensorBoard 的 `ep_rew_mean` 保持原始奖励单位，便于解释 |
 | 暂不写自定义 callback | SB3 的 `Monitor` 已提供 `ep_rew_mean` / `ep_len_mean` |
 
-## 5. 验收记录（2026-11-14）
+### 设备与吞吐实测
 
-| 运行 | 结果 | 解读 |
-| --- | --- | --- |
-| 4096 步（2 envs） | 回放 1000 步全部 `timeout`，`mean_vx ≈ 0.00` | 策略学会"站着不动"：`upright + height + alive` 白拿 0.8 分 |
-| 100000 步（4 envs） | 每回合 34~97 步后摔倒，`mean_vx ≈ 0.2~0.4 m/s` | 开始前扑，但尚未形成步态 |
+环境：RTX 4060 Ti；16384 步、4 个环境、归一化开启、PPO 默认超参。
 
-结论：**训练链路正确，学习效果不足**。这是奖励结构与训练规模的正常结果，不是代码错误。
-下一步按优先级：
+| 配置 | 实测吞吐 |
+| --- | --- |
+| CPU，`n_envs=4` | ≈2313 fps |
+| CUDA，`n_envs=4` | ≈1137 fps |
+| CPU，`n_envs=8` | ≈2603 fps |
 
-1. 接 `VecNormalize` 并保存统计量；`command_speed` 维度用固定缩放，避免课程切换时统计量漂移。
-2. 把 `info["reward_terms"]` 扁平化后交给 `Monitor(info_keywords=...)`，让 TensorBoard 能看到分项曲线。
-3. 评估指标补充平均前进速度、摔倒率、左右脚接触比例。
-4. 加长训练并引入速度课程（`0.0~1.0` → `2.0~3.5 m/s`），再判断是否需要调奖励权重。
 
-## 6. 测试
+## 5. 归一化细节
 
-`tests/test_training.py` 覆盖训练层的契约，而不是训练效果：
+观测（最后一维 command 除外）：
 
-- `TrainConfig` 的非法输入拒绝与 `.zip` 路径补全；
-- `DummyVecEnv` 的批处理形状 `(n_envs, 34)` / `(n_envs, 8)`；
-- 相同种子下 `make_env` 的重置结果可复现。
+$$
+\hat{o}_i = \text{clip}\left(\frac{o_i - \mu_i}{\sqrt{\sigma_i^2 + \epsilon}},\ -10,\ 10\right)
+$$
+
+奖励：
+
+$$
+\hat{r}_t = \text{clip}\left(\frac{r_t}{\sqrt{\text{Var}(R_t) + \epsilon}},\ -10,\ 10\right),
+\quad R_t = \sum_k \gamma^k r_{t+k}
+$$
+
+- 统计量在线更新，只来自训练数据；评估时 `training=False` 冻结。
+- 观测是 34 维扁平 `Box`，SB3 的 `norm_obs_keys` 无法排除单维，因此用
+  `DuckVecNormalize.normalize_obs` 在归一化后把最后一维还原为原始 `command_speed`。
+- `normalize_obs` 同时覆盖 reset、step 和 `terminal_observation`，三条路径语义一致。
+
+## 6. 验收记录
+
+| 运行 | 回放结果 | 训练指标 | 解读 |
+| --- | --- | --- | --- |
+| 4096 步，无归一化 | 1000 步全部 `timeout`，`mean_vx ≈ 0.00` | — | 学会"站着不动"：静态奖励约 0.8/步 |
+| 100000 步，无归一化 | 34~46 步摔倒，`mean_vx ≈ 0.2~0.4`，平均回报 43.65 | `value_loss ≈ 28`，`explained_variance ≈ 0.52` | 开始前扑，critic 拟合困难 |
+| 100000 步，有归一化 | 41~58 步摔倒，`mean_vx ≈ 0.22~0.28`，平均回报 55.17 | `value_loss ≈ 0.28`，`explained_variance ≈ 0.58` | 优化明显更稳，存活更长，但仍未形成步态 |

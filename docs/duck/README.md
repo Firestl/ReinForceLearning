@@ -2,7 +2,7 @@
 
 本目录记录“训练鸭形机器人学会行走和奔跑”项目的设计决策、模型规范、环境接口与训练实现。当前已完成模型、环境与最小 PPO 训练闭环，进入训练调优阶段。
 
-> 状态：M1（模型可加载）、M2（环境可运行）与 M3（PPO 冒烟训练）已实现；`tests/` 覆盖模型、环境与训练层。M3 只验证训练数据链，步态质量待后续调优。最后更新：2026-11-14。
+> 状态：M1（模型可加载）、M2（环境可运行）、M3（PPO 冒烟训练）已实现；M4 进行中，`VecNormalize` 已完成并接入训练/评估。`tests/` 覆盖模型、环境与训练层。步态质量待后续调优。最后更新：2026-11-14。
 
 ## 1. 本阶段目标
 
@@ -42,25 +42,27 @@ src/reinforcelearning/
 ├── training/
 │   ├── config.py             # 训练实验参数
 │   ├── env_factory.py        # 向量化环境构造
+│   ├── vec_normalize.py      # command 维不归一化的 VecNormalize
 │   └── runner.py             # PPO 训练/评估编排
 └── cli.py                    # rl-train / rl-eval 入口
 tests/
 ├── test_duck_model.py
 ├── test_duck_env.py
-└── test_training.py
+├── test_training.py
+└── test_vec_normalize.py
 ```
 
 ## 4. 文档索引
 
 - [鸭子模型设计](01-duck-model.md)：坐标系、尺寸、关节、执行器、碰撞体和 MJCF 结构。
 - [物理环境接口](02-physics-environment.md)：观测空间、动作空间、奖励、终止条件、控制循环与渲染调试。
-- [最小 PPO 训练](04-training.md)：训练层结构、运行命令、验收记录与已知局限。
+- [最小 PPO 训练与归一化](04-training.md)：训练层结构、运行命令、`VecNormalize` 设计与验收记录。
 
 历史文档：[已归档的实施计划](archive/03-implementation-plan.md)（阶段 A-C 已完成，仅作记录）。
 
 ## 5. 里程碑
 
-M0 文档就绪 → M1 模型可加载 → M2 环境可运行 → M3 PPO 冒烟训练（已完成）；M4 训练调优（待规划：`VecNormalize`、奖励分项日志、速度课程）。验收记录见[已归档的实施计划](archive/03-implementation-plan.md)与[最小 PPO 训练](04-training.md)。
+M0 文档就绪 → M1 模型可加载 → M2 环境可运行 → M3 PPO 冒烟训练（已完成）→ M4 训练调优（进行中：`VecNormalize` 已完成；奖励分项日志、速度课程待做）。验收记录见[已归档的实施计划](archive/03-implementation-plan.md)与[最小 PPO 训练与归一化](04-training.md)。
 
 ## 6. 维护约定
 
