@@ -19,6 +19,14 @@ def vecnormalize_file_for(model_path: Path) -> Path:
     return model_file.with_name(f"{model_file.stem}_vecnormalize.pkl")
 
 
+def _require_int(name: str, value: object, *, minimum: int) -> None:
+    """校验整数字段；``bool`` 是 ``int`` 的子类，必须显式拒绝。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} 必须为 int，实际 {value!r}")
+    if value < minimum:
+        raise ValueError(f"{name} 必须为 >= {minimum} 的整数，实际 {value!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class TrainConfig:
     """一次 PPO 训练实验的规模与输出位置。"""
@@ -38,16 +46,20 @@ class TrainConfig:
         if self.log_dir is not None:
             object.__setattr__(self, "log_dir", Path(self.log_dir))
 
-        if not isinstance(self.total_timesteps, int) or self.total_timesteps < 1:
-            raise ValueError(f"total_timesteps 必须为 >= 1 的整数，实际 {self.total_timesteps!r}")
-        if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            raise ValueError(f"n_envs 必须为 >= 1 的整数，实际 {self.n_envs!r}")
-        if not isinstance(self.seed, int) or self.seed < 0:
-            raise ValueError(f"seed 必须为 >= 0 的整数，实际 {self.seed!r}")
-        if not isinstance(self.device, str) or not self.device:
+        _require_int("total_timesteps", self.total_timesteps, minimum=1)
+        _require_int("n_envs", self.n_envs, minimum=1)
+        _require_int("seed", self.seed, minimum=0)
+
+        if not isinstance(self.device, str):
+            raise TypeError(f"device 必须为 str，实际 {self.device!r}")
+        if not self.device:
             raise ValueError(f"device 必须为非空字符串，实际 {self.device!r}")
+
+        if isinstance(self.gamma, bool) or not isinstance(self.gamma, (int, float)):
+            raise TypeError(f"gamma 必须为数值，实际 {self.gamma!r}")
         if not math.isfinite(self.gamma) or not 0.0 < self.gamma < 1.0:
             raise ValueError(f"gamma 必须位于 (0, 1)，实际 {self.gamma!r}")
+
         if not isinstance(self.normalize, bool):
             raise TypeError(f"normalize 必须为 bool，实际 {self.normalize!r}")
         if not isinstance(self.norm_reward, bool):

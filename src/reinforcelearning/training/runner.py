@@ -58,6 +58,38 @@ def train(config: TrainConfig) -> Path:
     return config.model_file
 
 
+def _make_eval_env(
+    model_path: Path,
+    *,
+    seed: int,
+    render: bool,
+    load_normalization: bool,
+) -> VecEnv:
+    """构造评估环境；统计量文件存在时加载并冻结。"""
+    vec_env = make_vec_env(
+        n_envs=1,
+        seed=seed,
+        render_mode="human" if render else None,
+        normalize=False,
+    )
+    if not load_normalization:
+        return vec_env
+
+    normalize_file = vecnormalize_file_for(model_path)
+    if not normalize_file.exists():
+        return vec_env
+
+    try:
+        normalized_env = DuckVecNormalize.load(str(normalize_file), vec_env)
+    except Exception:
+        vec_env.close()
+        raise
+    normalized_env.training = False
+    normalized_env.norm_reward = False
+    print(f"加载归一化统计量: {normalize_file}")
+    return normalized_env
+
+
 def evaluate(
     model_path: Path,
     *,
@@ -75,21 +107,13 @@ def evaluate(
     if episodes < 1:
         raise ValueError(f"episodes 必须为 >= 1 的整数，实际 {episodes}")
 
-    vec_env = make_vec_env(
-        n_envs=1,
+    vec_env = _make_eval_env(
+        model_path,
         seed=seed,
-        render_mode="human" if render else None,
-        normalize=False,
+        render=render,
+        load_normalization=load_normalization,
     )
     try:
-        normalize_file = vecnormalize_file_for(model_path)
-        if load_normalization and normalize_file.exists():
-            normalized_env = DuckVecNormalize.load(str(normalize_file), vec_env)
-            normalized_env.training = False
-            normalized_env.norm_reward = False
-            vec_env = normalized_env
-            print(f"加载归一化统计量: {normalize_file}")
-
         model = PPO.load(model_path, env=vec_env, device="cpu")
         frame_period = 1.0 / float(vec_env.get_attr("metadata")[0]["render_fps"]) if render else 0.0
 
