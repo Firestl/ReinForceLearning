@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# MuJoCo runtime logs (written on physics warnings)
+MUJOCO_LOG.TXT
