@@ -37,4 +37,5 @@ torch = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32'" }]
 [dependency-groups]
 dev = [
     "ruff>=0.17.5",
+    "ty>=0.0.104",
 ]
