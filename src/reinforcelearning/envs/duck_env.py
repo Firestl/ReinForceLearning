@@ -126,8 +126,10 @@ class DuckEnv(gymnasium.Env):
         self._warning_count = self._physics_warning_count()
 
         mujoco.mj_forward(self.model, self.data)
-        info = self._build_info(state=self._current_state(), contacts=self._contact_flags())
-        return self._get_obs(), info
+        state = self._current_state()
+        contacts = self._contact_flags()
+        info = self._build_info(state=state, contacts=contacts)
+        return self._get_obs(state), info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         cfg = self.config
