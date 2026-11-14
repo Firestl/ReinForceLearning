@@ -169,7 +169,7 @@ fall_contact / excessive_tilt / too_low / non_finite / timeout
 每次 `reset(seed=None, options=None)` 返回 `(obs, info)`：
 
 1. 清空 `MjData`，模型参数保持不变。
-2. 根节点放在平地上方约 0.233 m（默认姿态下脚底接近 z=0），初始姿态直立，可随机绕 z 轴旋转 ±π。
+2. 根节点放在平地上方 `DuckEnvConfig.spawn_height`（默认 0.233 m，默认姿态下脚底接近 z=0），初始姿态直立，可随机绕 z 轴旋转 ±π。
 3. 8 个关节设为默认姿态并加入小幅噪声。
 4. 基座速度和关节速度置零，可加入极小噪声；采样新的速度指令。
 5. 不做长时间“稳定化预仿真”，避免训练和评估初始条件不一致。
@@ -210,7 +210,7 @@ fall_contact / excessive_tilt / too_low / non_finite / timeout
 
 - 训练默认不渲染；评估时用 `render_mode="human"`，或通过 `mujoco.viewer.launch_passive` 调试。
 - 视频用 `render_mode="rgb_array"` 离屏渲染保存。
-- `metadata` 至少包含 `render_modes=["human", "rgb_array"]` 和 `render_fps=50`。
+- `metadata` 至少包含 `render_modes=["human", "rgb_array"]` 和 `render_fps`（默认 50，按 `1 / (sim_dt × frame_skip)` 推导，配置变化时自动调整）。
 - 实现 `close()` 释放 viewer 和渲染资源。
 - 调试工具显示关节目标角/实际角、足底接触和机身高度。
 
@@ -227,7 +227,7 @@ default_joint_pos
 joint_lower / joint_upper
 command_range
 reward_weights / height_target
-fall_height / max_tilt
+spawn_height / fall_height / max_tilt
 ```
 
 `model_path` 建议通过 `importlib.resources.as_file` 或基于 `__file__` 解析，避免依赖当前工作目录；`MjModel.from_xml_path` 需要真实文件路径。

@@ -5,6 +5,8 @@
 > 备注（2026-11-14）：按当前指示暂不编写测试代码；涉及 `tests/` 的条目保留未勾选，验收以一次性脚本验证代替（结果记录在各阶段验收行）。阶段 D 尚未开始。
 >
 > 2026-11-14 code review 后修复：角速度 body 系读取、`sim_dt` 生效与 `render_fps` 推导、`spawn_height` 与奖励参数解耦、模型契约校验补齐（torso body/关节类型与轴/ctrlrange）及非有限动作防护。
+>
+> 第二轮 review 后补充：执行器类型校验（trntype/gaintype/biastype，区分 position actuator 与 motor）、ctrlrange 改为"限位内且覆盖动作目标范围"（对应 docs/01 §6 的"一致或略小"）、`DuckEnvConfig`/`RewardConfig` 构造期输入校验、`reset()` 单遍状态计算。
 
 ## 1. 阶段 A：环境与项目脚手架
 
