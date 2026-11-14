@@ -89,7 +89,7 @@ class DuckModelContract:
                     errors.append(
                         f"执行器 bias 类型不符: 第 {i} 个执行器应为 affine bias（position actuator）"
                     )
-                # ctrlrange 不得改变动作语义（docs/01 §6：与关节限位一致或略小）：
+                # ctrlrange 不得改变动作语义（docs/duck/01 §6：与关节限位一致或略小）：
                 # 不超出关节限位，且覆盖环境可能写入的目标角范围
                 # （default ± action_scale 与限位内 margin 区间的交集），
                 # 否则 MuJoCo 会再次 clamp，动作映射被静默修改

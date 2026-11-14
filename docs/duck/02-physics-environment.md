@@ -231,23 +231,3 @@ spawn_height / fall_height / max_tilt
 ```
 
 `model_path` 建议通过 `importlib.resources.as_file` 或基于 `__file__` 解析，避免依赖当前工作目录；`MjModel.from_xml_path` 需要真实文件路径。
-
-## 12. 测试清单
-
-- [ ] `mujoco.MjModel.from_xml_path()` 加载成功且无警告。
-- [ ] `reset()` 返回 `(obs, info)`，`obs` 为有限值、形状 `(34,)`、dtype `float32`。
-- [ ] `step(np.zeros(8, dtype=np.float32))` 返回 `(obs, reward, terminated, truncated, info)`，形状和类型正确。
-- [ ] `gymnasium.utils.env_checker.check_env(env, skip_render_check=True)` 通过。
-- [ ] 跨回合累计执行 1000 次随机动作（`terminated`/`truncated` 时 `reset()`），观测、奖励和物理状态无 NaN/Inf。
-- [ ] 用已知 `qpos`/`qvel` 验证 34 维观测的索引布局和 body-frame 速度。
-- [ ] 相同 seed 下 reset 结果可复现。
-- [ ] 超时只设置 `truncated=True`，摔倒只设置 `terminated=True`。
-- [ ] 超时测试通过临时调小 `max_episode_steps` 或稳定站姿触发，避免随机动作提前摔倒。
-- [ ] `info` 包含全部 9 个奖励分项和终止原因。
-- [ ] 8 个动作映射到正确的关节目标角，顺序不混乱，并裁剪到关节限位内。
-- [ ] 头部/躯干触地时 `terminated=True`，`termination_reason="fall_contact"`。
-- [ ] 鸭子-鸭子无接触，脚/躯干/头部-地面接触可被检测。
-- [ ] `render_mode="rgb_array"` 能返回帧，`close()` 不报错。
-- [ ] viewer 中默认站姿、头部、腿部和脚掌方向正确。
-
-规范升级时同步更新观测/动作维度、`step()` 返回结构、训练输入维度和对应测试。

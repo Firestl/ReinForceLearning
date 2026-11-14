@@ -182,4 +182,4 @@ data.ctrl[:] = q_target
 
 ## 9. 验收
 
-模型加载、仿真稳定性、默认姿态和命名接口的验收项见[实施计划](03-implementation-plan.md)阶段 B。
+模型加载、仿真稳定性、默认姿态和命名接口的验收项见[已归档的实施计划](archive/03-implementation-plan.md)阶段 B。

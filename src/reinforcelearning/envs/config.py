@@ -1,6 +1,6 @@
 """鸭子环境与奖励参数的集中配置。
 
-本模块是 docs/02-physics-environment.md §11 所述配置项的唯一来源；
+本模块是 docs/duck/02-physics-environment.md §11 所述配置项的唯一来源；
 环境运行时会校验这里的契约值与 MJCF 模型一致。
 """
 
@@ -102,7 +102,7 @@ class RewardConfig:
 
 @dataclass(frozen=True)
 class DuckEnvConfig:
-    """DuckEnv 的运行参数。字段含义见 docs/02-physics-environment.md。"""
+    """DuckEnv 的运行参数。字段含义见 docs/duck/02-physics-environment.md。"""
 
     model_path: Path = DEFAULT_MODEL_PATH
     sim_dt: float = 0.002

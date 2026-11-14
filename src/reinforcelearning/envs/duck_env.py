@@ -1,4 +1,4 @@
-"""鸭形机器人 Gymnasium 环境，实现规范见 docs/02-physics-environment.md。"""
+"""鸭形机器人 Gymnasium 环境，实现规范见 docs/duck/02-physics-environment.md。"""
 
 from __future__ import annotations
 
