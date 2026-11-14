@@ -27,7 +27,7 @@
 | 小腿 | capsule | 膝-踝间距 0.10 m，半径 0.025 m | 0.08 kg/侧 | 膝到踝；capsule 端帽使视觉总长更长 |
 | 脚掌 | box | 0.12 × 0.06 × 0.02 m | 0.05 kg/侧 | 提供接触面积；碰撞体不能过尖 |
 
-尺寸不是硬性指标，但应保持左右对称，且默认姿态下脚掌贴合地面。表中大腿/小腿长度指关节间距，XML `fromto` 与之对应；capsule 端帽会让视觉和碰撞范围大于该值，运动学连杆长度仍以关节间距为准。
+尺寸不是硬性指标，但应保持左右对称，且默认姿态下脚掌贴合地面。表中大腿/小腿长度指关节间距，XML `fromto` 与之对应（小腿碰撞胶囊除外，见 §7 防穿地截断）；capsule 端帽会让视觉和碰撞范围大于该值，运动学连杆长度仍以关节间距为准。
 
 ## 4. 运动学结构
 
@@ -107,7 +107,7 @@ data.ctrl[:] = q_target
 ## 7. 碰撞体和接触设置
 
 - 地面：`z = 0` 的 `plane` 或大尺寸静态 box。
-- 大腿、小腿使用 capsule 碰撞体；脚掌使用 box，默认姿态下最低点接近 `z = 0`。
+- 大腿使用 capsule 碰撞体；小腿 capsule 的 `fromto` 终点在踝关节上方 `0.025 m` 处（`-0.075` 而非 `-0.10`），否则半径 `0.025 m` 的端帽在默认姿态下会穿地约 `14 mm`；运动学连杆长度仍为 `0.10 m`。脚掌使用 box，默认姿态下最低点实测 `z = +0.001 m`。
 - 第一版用位掩码关闭鸭子自碰撞：鸭子 geom 统一 `contype="2" conaffinity="1"`，地面 `contype="1" conaffinity="1"`；这样鸭子-地面接触保留，鸭子-鸭子不接触。
 - 后续需要腿-腿或腿-躯干碰撞时，恢复相关 geom 的 `contype`/`conaffinity`，再用 `<contact><exclude body1="..." body2="..."/></contact>` 排除父子/相邻 pair，而不是直接打开全部自碰撞。
 - 必须检测足底接触以及躯干/头部与地面碰撞。
@@ -148,7 +148,8 @@ data.ctrl[:] = q_target
         <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.08" size="0.03" mass="0.10"/>
         <body name="left_shin" pos="0 0 -0.08">
           <joint name="left_knee_pitch" class="duck" axis="0 1 0" range="0 2.20"/>
-          <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.10" size="0.025" mass="0.08"/>
+          <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.075" size="0.025" mass="0.08"/>
+          <!-- 小腿碰撞胶囊在踝上方 0.025 m 截断，端帽不穿地；运动学长度仍为 0.10 m -->
           <body name="left_foot" pos="0 0 -0.10">
             <joint name="left_ankle_pitch" class="duck" axis="0 1 0" range="-0.90 0.60"/>
             <geom name="left_foot_geom" class="duck" type="box" size="0.06 0.03 0.01" mass="0.05"/>
@@ -170,11 +171,11 @@ data.ctrl[:] = q_target
 注意：
 
 - `pos` 和层级仅表达结构，需按最终尺寸调整；root 的 `0.233 m` 是按当前腿长和默认姿态核算的接地高度，改尺寸后需同步。
-- MuJoCo 4.0.1 中 `inheritrange` 是正实数比例（`0` 表示禁用，`1` 表示使用完整关节范围，也允许大于 1），不是布尔值；若版本不支持该属性，改用显式 `ctrlrange`。
+- MuJoCo 4.0.1 中 `inheritrange` 是正实数比例（`0` 表示禁用，`1` 表示使用完整关节范围，也允许大于 1），不是布尔值。已验证 `inheritrange="1"` 加载后 `ctrlrange` 等于关节限位且 `ctrllimited` 自动启用。
 - 质量由密度或显式 `mass` 决定，避免重复计入；草案只展开左腿，补齐右腿后总质量约 `1.51 kg`。
 - 头部的 `pos="0.13 0 0.07"` 是占位值；按当前尺寸头顶约 `0.37 m`，调整头部位姿后需同步总高和重心检查。
 - `class="duck"` 必须写在要应用该默认类的元素上；草案中 8 个主动关节、8 个 `position` 执行器和所有鸭子 geom 都要写，不能只写 `<default class="duck">`。
-- 草案未展开 `forcerange`；实现时按电机力矩上限为 8 个执行器补上，并确认 `autolimits` 能启用 `forcelimited`。
+- 电机力矩上限已实现为 `forcerange="-20 20"`；`autolimits="true"` 下会自动启用 `forcelimited`，已验证生效。
 - actuator 的定义顺序必须与关节/动作顺序一致；草案只展示一个 actuator，补齐其余 7 个时不要改变顺序。
 - 没有把 `class="duck"` 加在 `torso` body 上，是为了避免 `freejoint` 也继承 `armature`、`damping` 和 `frictionloss`；若改用 body 级继承，需要给 `root` 显式清除这些属性。
 
