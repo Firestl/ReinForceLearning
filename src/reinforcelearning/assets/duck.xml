@@ -1,0 +1,68 @@
+<mujoco model="duck">
+  <!-- 鸭形双足机器人第一版模型，规范见 docs/01-duck-model.md -->
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <default>
+    <default class="duck">
+      <joint armature="0.005" damping="0.05" frictionloss="0.01"/>
+      <!-- 鸭子 geom 用 contype=2/conaffinity=1：与地面(1/1)可接触，鸭子之间不接触 -->
+      <geom friction="1.0 0.02 0.001" condim="3" contype="2" conaffinity="1"/>
+      <position kp="40" kv="1.0" inheritrange="1" forcerange="-20 20"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 2.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0"
+          contype="1" conaffinity="1" friction="1.0 0.02 0.001"/>
+
+    <body name="torso" pos="0 0 0.233">
+      <freejoint name="root"/>
+      <geom name="torso_geom" class="duck" type="box" size="0.13 0.09 0.07" mass="0.9"/>
+      <!-- 头部兼作简化碰撞体；头顶最高点约 0.373 m -->
+      <geom name="head_geom" class="duck" type="sphere" size="0.07" mass="0.15" pos="0.13 0 0.07"/>
+
+      <body name="left_hip" pos="0 0.10 -0.05">
+        <joint name="left_hip_roll" class="duck" type="hinge" axis="1 0 0" range="-0.35 0.35"/>
+        <joint name="left_hip_pitch" class="duck" type="hinge" axis="0 1 0" range="-1.30 0.80"/>
+        <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.08" size="0.03" mass="0.10"/>
+        <body name="left_shin" pos="0 0 -0.08">
+          <joint name="left_knee_pitch" class="duck" type="hinge" axis="0 1 0" range="0 2.20"/>
+          <!-- 碰撞胶囊在踝上方 0.025 m 截断，默认姿态端帽不穿地；运动学长度仍为 0.10 m -->
+          <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.075" size="0.025" mass="0.08"/>
+          <body name="left_foot" pos="0 0 -0.10">
+            <joint name="left_ankle_pitch" class="duck" type="hinge" axis="0 1 0" range="-0.90 0.60"/>
+            <geom name="left_foot_geom" class="duck" type="box" size="0.06 0.03 0.01" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+
+      <body name="right_hip" pos="0 -0.10 -0.05">
+        <joint name="right_hip_roll" class="duck" type="hinge" axis="1 0 0" range="-0.35 0.35"/>
+        <joint name="right_hip_pitch" class="duck" type="hinge" axis="0 1 0" range="-1.30 0.80"/>
+        <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.08" size="0.03" mass="0.10"/>
+        <body name="right_shin" pos="0 0 -0.08">
+          <joint name="right_knee_pitch" class="duck" type="hinge" axis="0 1 0" range="0 2.20"/>
+          <geom class="duck" type="capsule" fromto="0 0 0 0 0 -0.075" size="0.025" mass="0.08"/>
+          <body name="right_foot" pos="0 0 -0.10">
+            <joint name="right_ankle_pitch" class="duck" type="hinge" axis="0 1 0" range="-0.90 0.60"/>
+            <geom name="right_foot_geom" class="duck" type="box" size="0.06 0.03 0.01" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- 执行器顺序即动作/关节顺序的契约 -->
+  <actuator>
+    <position name="left_hip_roll_act" joint="left_hip_roll" class="duck"/>
+    <position name="left_hip_pitch_act" joint="left_hip_pitch" class="duck"/>
+    <position name="left_knee_pitch_act" joint="left_knee_pitch" class="duck"/>
+    <position name="left_ankle_pitch_act" joint="left_ankle_pitch" class="duck"/>
+    <position name="right_hip_roll_act" joint="right_hip_roll" class="duck"/>
+    <position name="right_hip_pitch_act" joint="right_hip_pitch" class="duck"/>
+    <position name="right_knee_pitch_act" joint="right_knee_pitch" class="duck"/>
+    <position name="right_ankle_pitch_act" joint="right_ankle_pitch" class="duck"/>
+  </actuator>
+</mujoco>
