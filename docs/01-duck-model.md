@@ -178,6 +178,7 @@ data.ctrl[:] = q_target
 - 电机力矩上限已实现为 `forcerange="-20 20"`；`autolimits="true"` 下会自动启用 `forcelimited`，已验证生效。
 - actuator 的定义顺序必须与关节/动作顺序一致；草案只展示一个 actuator，补齐其余 7 个时不要改变顺序。
 - 没有把 `class="duck"` 加在 `torso` body 上，是为了避免 `freejoint` 也继承 `armature`、`damping` 和 `frictionloss`；若改用 body 级继承，需要给 `root` 显式清除这些属性。
+- 模型的 `qpos0`（关节全 0）是直腿姿态，脚底最低点约 `-0.007 m`（轻微穿地），仅供加载/编译检查；运行时站姿契约以 `DuckEnvConfig.default_joint_pos` 与 `DuckEnv.reset()` 为准，不要用 `qpos0` 验证脚底接地。
 
 ## 9. 验收
 
