@@ -22,6 +22,11 @@ reinforcelearning = "reinforcelearning:main"
 line-length = 100
 target-version = "py312"
 
+[tool.ty.analysis]
+# mujoco 以编译扩展形式发布，不带 py.typed/*.pyi 存根，ty 无法解析其成员。
+# 仅把 mujoco 视为 Any，避免全局关闭 missing-attribute 而掩盖本仓库的真实错误。
+replace-imports-with-any = ["mujoco"]
+
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
