@@ -60,7 +60,7 @@ MuJoCo 索引约定（实现时按名称查，不硬编码）：
 
 - 不把世界坐标 `x, y` 放入观测，减少对起点和地图位置的过拟合。
 - 初始阶段不使用历史帧堆叠；后续加入足底接触、步态相位或转向指令时，应升维并更新本章节。
-- `base_lin_vel`/`base_ang_vel` 从 freejoint 的 `qvel` 转换到身体坐标系；实现时用已知姿态测试符号和参考系。
+- `base_lin_vel` 由 freejoint `qvel[0:3]`（世界系）经 `R^T` 旋转到身体坐标系；`base_ang_vel` 直接取 `qvel[3:6]`，因为 MuJoCo free joint 的角速度本身就在 body 系（已用 yaw=90°、已知 `qvel[3:6]` 的实验确认），再做 `R^T` 属于重复旋转。实现时用已知姿态测试符号和参考系。
 - 速度、关节角等用 `VecNormalize` 归一化；command 的归一化见 §5。
 
 `observation_space` 建议：

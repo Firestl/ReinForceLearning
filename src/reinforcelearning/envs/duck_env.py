@@ -63,8 +63,7 @@ class DuckEnv(gymnasium.Env):
 
         # 按名称建立索引，不硬编码下标
         joint_ids = [
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            for name in JOINT_ORDER
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in JOINT_ORDER
         ]
         self._qpos_adr = self.model.jnt_qposadr[joint_ids]
         self._dof_adr = self.model.jnt_dofadr[joint_ids]
@@ -128,9 +127,7 @@ class DuckEnv(gymnasium.Env):
         mujoco.mj_forward(self.model, self.data)
         return self._get_obs(), self._build_info(termination_reason=None)
 
-    def step(
-        self, action: np.ndarray
-    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         cfg = self.config
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (cfg.action_dim,):
@@ -188,7 +185,7 @@ class DuckEnv(gymnasium.Env):
         """从 qvel/xmat 提取身体坐标系下的运动量。"""
         rotation = self.data.xmat[self._torso_body].reshape(3, 3)
         lin_vel = rotation.T @ self.data.qvel[0:3]  # 世界系 -> 身体系
-        ang_vel = rotation.T @ self.data.qvel[3:6]
+        ang_vel = self.data.qvel[3:6].copy()  # free joint 角速度本身就是 body 系，不可再旋转
         projected_gravity = -rotation[2, :]  # R^T @ (0, 0, -1)
         body_up_z = -projected_gravity[2]
         tilt = float(np.arccos(np.clip(body_up_z, -1.0, 1.0)))
@@ -227,9 +224,7 @@ class DuckEnv(gymnasium.Env):
         tracking = float(np.exp(-((speed_error / rc.speed_sigma) ** 2)))
         upright = float(np.clip(state["body_up_z"], 0.0, 1.0))
         height_term = float(
-            np.exp(
-                -((state["body_height"] - rc.height_target) / rc.height_sigma) ** 2
-            )
+            np.exp(-(((state["body_height"] - rc.height_target) / rc.height_sigma) ** 2))
         )
         joint_tracking_error = self.data.qpos[self._qpos_adr] - self.data.ctrl
 
