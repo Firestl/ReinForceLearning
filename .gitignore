@@ -12,5 +12,9 @@ wheels/
 # MuJoCo runtime logs (written on physics warnings)
 MUJOCO_LOG.TXT
 
+# Training artifacts
+models/
+runs/
+
 # Local ZCode workspace/agent configuration
 .zcode/

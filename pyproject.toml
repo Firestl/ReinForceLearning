@@ -17,6 +17,8 @@ dependencies = [
 
 [project.scripts]
 reinforcelearning = "reinforcelearning:main"
+rl-train = "reinforcelearning.cli:train_main"
+rl-eval = "reinforcelearning.cli:evaluate_main"
 
 [tool.ruff]
 line-length = 100

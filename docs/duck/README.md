@@ -1,8 +1,8 @@
 # 鸭形机器人强化学习：设计与实现文档
 
-本目录记录“训练鸭形机器人学会行走和奔跑”项目的设计决策、模型规范、环境接口和实施计划。当前阶段只准备**鸭子模型与物理环境**，暂不实现最终训练算法。
+本目录记录“训练鸭形机器人学会行走和奔跑”项目的设计决策、模型规范、环境接口与训练实现。当前已完成模型、环境与最小 PPO 训练闭环，进入训练调优阶段。
 
-> 状态：M1（模型可加载）与 M2（环境可运行）已实现；`tests/test_duck_model.py` 与 `tests/test_duck_env.py` 已落地并通过。最后更新：2026-11-14。
+> 状态：M1（模型可加载）、M2（环境可运行）与 M3（PPO 冒烟训练）已实现；`tests/` 覆盖模型、环境与训练层。M3 只验证训练数据链，步态质量待后续调优。最后更新：2026-11-14。
 
 ## 1. 本阶段目标
 
@@ -11,7 +11,7 @@
 1. 用 MuJoCo 定义一只双足、8 个主动关节的鸭形机器人。
 2. 提供符合 Gymnasium 接口的观测、动作、奖励、终止和重置。
 3. 通过无训练策略完成模型加载、随机动作仿真和数值稳定性测试。
-4. 为后续 PPO 训练提供固定接口。
+4. 为后续 PPO 训练提供固定接口，并已接入最小 PPO 训练闭环。
 
 暂不包含：复杂地形、视觉输入、sim-to-real、真实电机建模和最终步态调优。
 
@@ -28,7 +28,7 @@
 
 坐标系、步长、尺寸、关节限位和接口维度见后续文档。表中的初始值需通过模型测试和训练结果迭代。
 
-## 3. 计划中的代码结构
+## 3. 代码结构
 
 ```text
 src/reinforcelearning/
@@ -36,26 +36,31 @@ src/reinforcelearning/
 │   └── duck.xml              # MJCF 模型
 ├── envs/
 │   ├── __init__.py
+│   ├── config.py             # 环境与模型参数
 │   ├── duck_env.py           # Gymnasium 环境
-│   └── config.py             # 环境与模型参数
-├── train_ppo.py              # 训练入口（后续阶段）
-├── evaluate.py               # 模型回放（后续阶段）
-└── callbacks.py              # 日志与检查点（后续阶段）
+│   └── model_contract.py     # 模型契约校验
+├── training/
+│   ├── config.py             # 训练实验参数
+│   ├── env_factory.py        # 向量化环境构造
+│   └── runner.py             # PPO 训练/评估编排
+└── cli.py                    # rl-train / rl-eval 入口
 tests/
 ├── test_duck_model.py
-└── test_duck_env.py
+├── test_duck_env.py
+└── test_training.py
 ```
 
 ## 4. 文档索引
 
 - [鸭子模型设计](01-duck-model.md)：坐标系、尺寸、关节、执行器、碰撞体和 MJCF 结构。
 - [物理环境接口](02-physics-environment.md)：观测空间、动作空间、奖励、终止条件、控制循环与渲染调试。
+- [最小 PPO 训练](04-training.md)：训练层结构、运行命令、验收记录与已知局限。
 
 历史文档：[已归档的实施计划](archive/03-implementation-plan.md)（阶段 A-C 已完成，仅作记录）。
 
 ## 5. 里程碑
 
-M0 文档就绪 → M1 模型可加载 → M2 环境可运行（已完成）；M3 待规划。验收记录见[已归档的实施计划](archive/03-implementation-plan.md)。
+M0 文档就绪 → M1 模型可加载 → M2 环境可运行 → M3 PPO 冒烟训练（已完成）；M4 训练调优（待规划：`VecNormalize`、奖励分项日志、速度课程）。验收记录见[已归档的实施计划](archive/03-implementation-plan.md)与[最小 PPO 训练](04-training.md)。
 
 ## 6. 维护约定
 
