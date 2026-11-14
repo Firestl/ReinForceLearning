@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import gymnasium
 import mujoco
 import numpy as np
+import numpy.typing as npt
 from gymnasium import spaces
 
-from reinforcelearning.envs.config import JOINT_AXES, JOINT_ORDER, DuckEnvConfig
+from reinforcelearning.envs.config import (
+    REWARD_TERM_KEYS,
+    DuckEnvConfig,
+    RewardTerm,
+    RewardTerms,
+)
+from reinforcelearning.envs.model_contract import DuckModelContract
 
 # 表示物理状态非有限的 MuJoCo 警告；数值异常时 MuJoCo 会自动重置 qpos，
 # 因此事后检查 qpos 的有限性不够，需要监视警告计数
@@ -20,24 +28,39 @@ _PHYSICS_WARNINGS = (
     mujoco.mjtWarning.mjWARN_BADCTRL,
 )
 
-# info["reward_terms"] 的固定键顺序，惩罚项为负，九项之和等于 reward
-_REWARD_TERM_KEYS = (
-    "tracking",
-    "upright",
-    "height_reward",
-    "alive",
-    "lateral",
-    "yaw",
-    "energy",
-    "action_rate",
-    "joint_tracking",
-)
+
+@dataclass(frozen=True, slots=True)
+class DuckState:
+    """单步物理状态快照；观测、奖励与终止都消费同一份数据。"""
+
+    lin_vel: np.ndarray
+    ang_vel: np.ndarray
+    projected_gravity: np.ndarray
+    body_up_z: float
+    tilt_angle: float
+    body_height: float
+    joint_pos: np.ndarray
+    joint_vel: np.ndarray
+    ctrl: np.ndarray
+    actuator_force: np.ndarray
+    physics_finite: bool
+    warning_count: int
 
 
-class DuckEnv(gymnasium.Env):
+class ContactFlags(NamedTuple):
+    """接触检测结果（左脚、右脚、躯干/头部触地）。"""
+
+    left: bool
+    right: bool
+    fall: bool
+
+
+class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
     """平地直线行走的鸭形双足环境（位置执行器、本体感知观测）。"""
 
-    metadata: ClassVar[dict[str, Any]] = {"render_modes": ["human", "rgb_array"]}
+    # 类级模板，__init__ 中合并为实例副本；模板本身从不被原地修改。
+    # gymnasium.Env 基类契约即如此声明（core.py 的 metadata），故豁免 RUF012。
+    metadata: dict[str, Any] = {"render_modes": ["human", "rgb_array"]}  # noqa: RUF012
 
     def __init__(
         self,
@@ -60,21 +83,9 @@ class DuckEnv(gymnasium.Env):
         # sim_dt 是物理步长的唯一来源，覆盖 XML 中的 timestep
         self.model.opt.timestep = cfg.sim_dt
         self.data = mujoco.MjData(self.model)
-        self._validate_model()
 
-        # 按名称建立索引，不硬编码下标
-        joint_ids = [
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in JOINT_ORDER
-        ]
-        self._qpos_adr = self.model.jnt_qposadr[joint_ids]
-        self._dof_adr = self.model.jnt_dofadr[joint_ids]
-
-        self._floor_geom = self._geom_id("floor")
-        self._torso_geom = self._geom_id("torso_geom")
-        self._head_geom = self._geom_id("head_geom")
-        self._left_foot_geom = self._geom_id("left_foot_geom")
-        self._right_foot_geom = self._geom_id("right_foot_geom")
-        self._torso_body = self._body_id("torso")
+        # 名称解析、维度/关节/执行器校验与接触 id 统一由模型契约负责
+        self._model_contract = DuckModelContract.from_model(self.model, cfg)
 
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(cfg.action_dim,), dtype=np.float32
@@ -83,9 +94,9 @@ class DuckEnv(gymnasium.Env):
             low=-np.inf, high=np.inf, shape=(cfg.obs_dim,), dtype=np.float32
         )
 
-        # 动作目标角的安全裁剪范围：关节限位内收缩 margin
-        self._ctrl_low = np.asarray(cfg.joint_lower) + cfg.joint_limits_margin
-        self._ctrl_high = np.asarray(cfg.joint_upper) - cfg.joint_limits_margin
+        # 动作映射后的可达目标区间；也是写入 ctrl 前的裁剪边界
+        self._ctrl_low = np.asarray(cfg.action_target_low)
+        self._ctrl_high = np.asarray(cfg.action_target_high)
 
         self._step_count = 0
         self._command = 0.0
@@ -98,7 +109,7 @@ class DuckEnv(gymnasium.Env):
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
+    ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
         super().reset(seed=seed)
         cfg = self.config
         _ = options  # 第一版不使用 reset 选项
@@ -112,8 +123,9 @@ class DuckEnv(gymnasium.Env):
         self.data.qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
 
         # 关节默认姿态 + 小幅噪声；速度置零 + 极小噪声
-        self.data.qpos[self._qpos_adr] = cfg.default_joint_pos
-        self.data.qpos[self._qpos_adr] += self.np_random.uniform(
+        qpos_adr = self._model_contract.qpos_adr
+        self.data.qpos[qpos_adr] = cfg.default_joint_pos
+        self.data.qpos[qpos_adr] += self.np_random.uniform(
             -cfg.reset_joint_noise, cfg.reset_joint_noise, cfg.action_dim
         )
         self.data.qvel[:] = self.np_random.uniform(
@@ -131,18 +143,21 @@ class DuckEnv(gymnasium.Env):
         info = self._build_info(state=state, contacts=contacts)
         return self._get_obs(state), info
 
-    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+    def step(
+        self, action: npt.NDArray[np.float32]
+    ) -> tuple[npt.NDArray[np.float32], float, bool, bool, dict[str, Any]]:
         cfg = self.config
-        action = np.asarray(action, dtype=np.float64).reshape(-1)
-        if action.shape != (cfg.action_dim,):
-            raise ValueError(f"动作维度应为 {cfg.action_dim}，实际 shape={action.shape}")
-        if not np.isfinite(action).all():
+        # 动作空间契约是 float32；内部统一转为 float64 平面向量（MuJoCo 数据为 float64）
+        action_vec = np.asarray(action, dtype=np.float64).reshape(-1)
+        if action_vec.shape != (cfg.action_dim,):
+            raise ValueError(f"动作维度应为 {cfg.action_dim}，实际 shape={action_vec.shape}")
+        if not np.isfinite(action_vec).all():
             # fail-fast：NaN/Inf 进入 ctrl 会产生 NaN 奖励/观测并污染训练 buffer
             raise ValueError("action 含 NaN/Inf，拒绝执行")
-        action = np.clip(action, -1.0, 1.0)
+        action_vec = np.clip(action_vec, -1.0, 1.0)
 
         # 归一化动作 -> 目标关节角 -> 限位内裁剪 -> 位置执行器
-        q_target = cfg.default_joint_pos + cfg.action_scale * action
+        q_target = cfg.default_joint_pos + cfg.action_scale * action_vec
         self.data.ctrl[:] = np.clip(q_target, self._ctrl_low, self._ctrl_high)
 
         for _ in range(cfg.frame_skip):
@@ -151,13 +166,13 @@ class DuckEnv(gymnasium.Env):
 
         state = self._current_state()
         contacts = self._contact_flags()
-        reward, reward_terms = self._compute_reward(action, state)
+        reward, reward_terms = self._compute_reward(action_vec, state)
         terminated, reason = self._check_termination(state, contacts)
         truncated = (not terminated) and self._step_count >= cfg.max_episode_steps
         if truncated:
             reason = "timeout"
 
-        self._last_action = action
+        self._last_action = action_vec
         obs = self._get_obs(state)
         info = self._build_info(
             state=state, contacts=contacts, reward_terms=reward_terms, termination_reason=reason
@@ -191,32 +206,39 @@ class DuckEnv(gymnasium.Env):
 
     # ------------------------------------------------------------------ 状态与观测
 
-    def _current_state(self) -> dict[str, Any]:
-        """从 qvel/xmat 提取身体坐标系下的运动量。"""
-        rotation = self.data.xmat[self._torso_body].reshape(3, 3)
+    def _current_state(self) -> DuckState:
+        """从 MjData 提取单步快照；观测、奖励与终止只消费这一份数据。"""
+        rotation = self.data.xmat[self._model_contract.torso_body].reshape(3, 3)
         lin_vel = rotation.T @ self.data.qvel[0:3]  # 世界系 -> 身体系
         ang_vel = self.data.qvel[3:6].copy()  # free joint 角速度本身就是 body 系，不可再旋转
         projected_gravity = -rotation[2, :]  # R^T @ (0, 0, -1)
         body_up_z = -projected_gravity[2]
         tilt = float(np.arccos(np.clip(body_up_z, -1.0, 1.0)))
-        return {
-            "lin_vel": lin_vel,
-            "ang_vel": ang_vel,
-            "projected_gravity": projected_gravity,
-            "body_up_z": float(body_up_z),
-            "tilt_angle": tilt,
-            "body_height": float(self.data.qpos[2]),
-        }
+        return DuckState(
+            lin_vel=lin_vel,
+            ang_vel=ang_vel,
+            projected_gravity=projected_gravity,
+            body_up_z=float(body_up_z),
+            tilt_angle=tilt,
+            body_height=float(self.data.qpos[2]),
+            joint_pos=self.data.qpos[self._model_contract.qpos_adr].copy(),
+            joint_vel=self.data.qvel[self._model_contract.dof_adr].copy(),
+            ctrl=self.data.ctrl.copy(),
+            actuator_force=self.data.actuator_force.copy(),
+            physics_finite=bool(
+                np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all()
+            ),
+            warning_count=self._physics_warning_count(),
+        )
 
-    def _get_obs(self, state: dict[str, Any] | None = None) -> np.ndarray:
-        state = self._current_state() if state is None else state
+    def _get_obs(self, state: DuckState) -> npt.NDArray[np.float32]:
         return np.concatenate(
             [
-                state["lin_vel"],
-                state["ang_vel"],
-                state["projected_gravity"],
-                self.data.qpos[self._qpos_adr],
-                self.data.qvel[self._dof_adr],
+                state.lin_vel,
+                state.ang_vel,
+                state.projected_gravity,
+                state.joint_pos,
+                state.joint_vel,
                 self._last_action,
                 np.array([self._command]),
             ]
@@ -225,47 +247,47 @@ class DuckEnv(gymnasium.Env):
     # ------------------------------------------------------------------ 奖励与终止
 
     def _compute_reward(
-        self, action: np.ndarray, state: dict[str, Any]
-    ) -> tuple[float, dict[str, float]]:
+        self, action: npt.NDArray[np.float64], state: DuckState
+    ) -> tuple[float, RewardTerms]:
         cfg = self.config
         rc = cfg.reward
 
-        speed_error = float(state["lin_vel"][0]) - self._command
+        speed_error = float(state.lin_vel[0]) - self._command
         tracking = float(np.exp(-((speed_error / rc.speed_sigma) ** 2)))
-        upright = float(np.clip(state["body_up_z"], 0.0, 1.0))
+        upright = float(np.clip(state.body_up_z, 0.0, 1.0))
         height_term = float(
-            np.exp(-(((state["body_height"] - rc.height_target) / rc.height_sigma) ** 2))
+            np.exp(-(((state.body_height - rc.height_target) / rc.height_sigma) ** 2))
         )
-        joint_tracking_error = self.data.qpos[self._qpos_adr] - self.data.ctrl
+        joint_tracking_error = state.joint_pos - state.ctrl
 
-        terms = {
-            "tracking": rc.tracking_weight * tracking,
-            "upright": rc.upright_weight * upright,
-            "height_reward": rc.height_weight * height_term,
-            "alive": rc.alive_weight,
-            "lateral": -rc.lateral_weight * float(state["lin_vel"][1] ** 2),
-            "yaw": -rc.yaw_weight * float(state["ang_vel"][2] ** 2),
-            "energy": -rc.energy_weight * float(np.sum(np.square(self.data.actuator_force))),
-            "action_rate": -rc.action_rate_weight
-            * float(np.sum(np.square(action - self._last_action))),
-            "joint_tracking": -rc.joint_tracking_weight
-            * float(np.sum(np.square(joint_tracking_error))),
+        # 未加权的分项值；键集与权重字段名均由 REWARD_TERM_KEYS 派生
+        reward_values: dict[RewardTerm, float] = {
+            "tracking": tracking,
+            "upright": upright,
+            "height_reward": height_term,
+            "alive": 1.0,
+            "lateral": -float(state.lin_vel[1] ** 2),
+            "yaw": -float(state.ang_vel[2] ** 2),
+            "energy": -float(np.sum(np.square(state.actuator_force))),
+            "action_rate": -float(np.sum(np.square(action - self._last_action))),
+            "joint_tracking": -float(np.sum(np.square(joint_tracking_error))),
+        }
+        terms: RewardTerms = {
+            term: float(getattr(rc, f"{term}_weight")) * reward_values[term]
+            for term in REWARD_TERM_KEYS
         }
         return float(sum(terms.values())), terms
 
     def _check_termination(
-        self, state: dict[str, Any], contacts: tuple[bool, bool, bool]
+        self, state: DuckState, contacts: ContactFlags
     ) -> tuple[bool, str | None]:
-        if self._physics_warning_count() > self._warning_count or not (
-            np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all()
-        ):
+        if state.warning_count > self._warning_count or not state.physics_finite:
             return True, "non_finite"
-        fall = contacts[2]
-        if fall:
+        if contacts.fall:
             return True, "fall_contact"
-        if state["tilt_angle"] > self.config.max_tilt:
+        if state.tilt_angle > self.config.max_tilt:
             return True, "excessive_tilt"
-        if state["body_height"] < self.config.fall_height:
+        if state.body_height < self.config.fall_height:
             return True, "too_low"
         return False, None
 
@@ -275,132 +297,41 @@ class DuckEnv(gymnasium.Env):
         """累计的物理状态警告数（BADQPOS/BADQVEL/BADQACC/BADCTRL）。"""
         return int(sum(self.data.warning[w].number for w in _PHYSICS_WARNINGS))
 
-    def _contact_flags(self) -> tuple[bool, bool, bool]:
-        """返回 (左脚触地, 右脚触地, 躯干/头部触地)。"""
+    def _contact_flags(self) -> ContactFlags:
+        """返回左脚/右脚/躯干头部触地标志。"""
+        contract = self._model_contract
         left = right = fall = False
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
             pair = {contact.geom1, contact.geom2}
-            if self._floor_geom not in pair:
+            if contract.floor_geom not in pair:
                 continue  # 自碰撞已通过 contype/conaffinity 关闭
-            other = next(g for g in pair if g != self._floor_geom)
-            if other == self._left_foot_geom:
+            other = next(g for g in pair if g != contract.floor_geom)
+            if other == contract.left_foot_geom:
                 left = True
-            elif other == self._right_foot_geom:
+            elif other == contract.right_foot_geom:
                 right = True
-            elif other in (self._torso_geom, self._head_geom):
+            elif other in (contract.torso_geom, contract.head_geom):
                 fall = True
-        return left, right, fall
+        return ContactFlags(left, right, fall)
 
     def _build_info(
         self,
-        state: dict[str, Any],
-        contacts: tuple[bool, bool, bool],
-        reward_terms: dict[str, float] | None = None,
+        state: DuckState,
+        contacts: ContactFlags,
+        reward_terms: RewardTerms | None = None,
         termination_reason: str | None = None,
     ) -> dict[str, Any]:
-        left_contact, right_contact, _ = contacts
         info: dict[str, Any] = {
-            "forward_speed": float(state["lin_vel"][0]),
-            "lateral_speed": float(state["lin_vel"][1]),
-            "body_height": state["body_height"],
-            "tilt_angle": state["tilt_angle"],
+            "forward_speed": float(state.lin_vel[0]),
+            "lateral_speed": float(state.lin_vel[1]),
+            "body_height": state.body_height,
+            "tilt_angle": state.tilt_angle,
             "command_speed": self._command,
-            "left_foot_contact": bool(left_contact),
-            "right_foot_contact": bool(right_contact),
+            "left_foot_contact": contacts.left,
+            "right_foot_contact": contacts.right,
             "termination_reason": termination_reason,
         }
         if reward_terms is not None:
-            info["reward_terms"] = {key: float(reward_terms[key]) for key in _REWARD_TERM_KEYS}
+            info["reward_terms"] = {key: float(reward_terms[key]) for key in REWARD_TERM_KEYS}
         return info
-
-    # ------------------------------------------------------------------ 模型校验与工具
-
-    def _validate_model(self) -> None:
-        """启动时校验模型与配置契约一致，避免静默的接口漂移。"""
-        cfg = self.config
-        n = cfg.action_dim
-        errors: list[str] = []
-
-        if self.model.nq != 7 + n or self.model.nv != 6 + n or self.model.nu != n:
-            errors.append(
-                f"维度不符: nq={self.model.nq} nv={self.model.nv} nu={self.model.nu}，"
-                f"期望 nq={7 + n} nv={6 + n} nu={n}"
-            )
-
-        for i, name in enumerate(JOINT_ORDER):
-            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if jid < 0:
-                errors.append(f"缺少关节 {name}")
-                continue
-            if self.model.jnt_qposadr[jid] != 7 + i or self.model.jnt_dofadr[jid] != 6 + i:
-                errors.append(
-                    f"关节顺序不符: {name} qposadr={self.model.jnt_qposadr[jid]}，期望 {7 + i}"
-                )
-            jnt_range = self.model.jnt_range[jid]
-            if not (
-                np.isclose(jnt_range[0], cfg.joint_lower[i], atol=1e-9)
-                and np.isclose(jnt_range[1], cfg.joint_upper[i], atol=1e-9)
-            ):
-                errors.append(
-                    f"关节限位不符: {name} model={jnt_range}，config=({cfg.joint_lower[i]}, {cfg.joint_upper[i]})"
-                )
-            if self.model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_HINGE:
-                errors.append(f"关节类型不符: {name} 应为 hinge")
-            if not np.allclose(self.model.jnt_axis[jid], JOINT_AXES[i], atol=1e-9):
-                errors.append(
-                    f"关节轴不符: {name} model={self.model.jnt_axis[jid]}，期望 {JOINT_AXES[i]}"
-                )
-            if self.model.nu > i:
-                act_joint = self.model.actuator_trnid[i, 0]
-                if act_joint != jid:
-                    errors.append(f"执行器顺序不符: 第 {i} 个执行器未驱动 {name}")
-                # 必须是 joint transmission 上的 position actuator（fixed gain + affine bias）；
-                # 例如误用 motor 时 ctrl 语义会从目标角变成力矩
-                if self.model.actuator_trntype[i] != mujoco.mjtTrn.mjTRN_JOINT:
-                    errors.append(f"执行器类型不符: 第 {i} 个执行器不是 joint transmission")
-                if self.model.actuator_gaintype[i] != mujoco.mjtGain.mjGAIN_FIXED:
-                    errors.append(f"执行器 gain 类型不符: 第 {i} 个执行器应为 fixed gain")
-                if self.model.actuator_biastype[i] != mujoco.mjtBias.mjBIAS_AFFINE:
-                    errors.append(
-                        f"执行器 bias 类型不符: 第 {i} 个执行器应为 affine bias（position actuator）"
-                    )
-                # ctrlrange 不得改变动作语义（docs/01 §6：与关节限位一致或略小）：
-                # 不超出关节限位，且覆盖环境可能写入的目标角范围
-                # （default ± action_scale 与限位内 margin 区间的交集），
-                # 否则 MuJoCo 会再次 clamp，动作映射被静默修改
-                ctrl_lo, ctrl_hi = self.model.actuator_ctrlrange[i]
-                target_low = max(
-                    cfg.default_joint_pos[i] - cfg.action_scale[i],
-                    cfg.joint_lower[i] + cfg.joint_limits_margin,
-                )
-                target_high = min(
-                    cfg.default_joint_pos[i] + cfg.action_scale[i],
-                    cfg.joint_upper[i] - cfg.joint_limits_margin,
-                )
-                if not (ctrl_lo <= target_low and ctrl_hi >= target_high):
-                    errors.append(
-                        f"执行器 ctrlrange 不覆盖动作目标范围: {name} "
-                        f"model=[{ctrl_lo}, {ctrl_hi}]，需包含 [{target_low:.3f}, {target_high:.3f}]"
-                    )
-                if not (ctrl_lo >= cfg.joint_lower[i] and ctrl_hi <= cfg.joint_upper[i]):
-                    errors.append(
-                        f"执行器 ctrlrange 超出关节限位: {name} "
-                        f"model=[{ctrl_lo}, {ctrl_hi}]，限位=({cfg.joint_lower[i]}, {cfg.joint_upper[i]})"
-                    )
-
-        if errors:
-            raise ValueError("duck.xml 与 DuckEnvConfig 契约不一致:\n" + "\n".join(errors))
-
-    def _geom_id(self, name: str) -> int:
-        gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
-        if gid < 0:
-            raise ValueError(f"模型缺少必需 geom: {name}")
-        return gid
-
-    def _body_id(self, name: str) -> int:
-        bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
-        if bid < 0:
-            # 不显式检查会拿到 -1，xmat[-1] 静默引用最后一个 body
-            raise ValueError(f"模型缺少必需 body: {name}")
-        return bid
