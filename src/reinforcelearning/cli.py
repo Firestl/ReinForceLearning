@@ -31,6 +31,18 @@ def train_main(argv: Sequence[str] | None = None) -> int:
         default="cpu",
         help="PyTorch 设备（默认 cpu；MLP 策略在 GPU 上通常更慢）",
     )
+    parser.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="观测/奖励归一化（默认开启）",
+    )
+    parser.add_argument(
+        "--norm-reward",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="归一化奖励（默认开启；仅在 --normalize 时生效）",
+    )
     args = parser.parse_args(argv)
 
     config = TrainConfig(
@@ -40,6 +52,8 @@ def train_main(argv: Sequence[str] | None = None) -> int:
         model_path=args.model_path,
         log_dir=None if args.no_tensorboard else args.log_dir,
         device=args.device,
+        normalize=args.normalize,
+        norm_reward=args.norm_reward,
     )
     model_file = train(config)
     print(f"\n模型已保存: {model_file}")
@@ -52,6 +66,11 @@ def evaluate_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--episodes", type=int, default=3, help="回放回合数（默认 3）")
     parser.add_argument("--seed", type=int, default=0, help="随机种子（默认 0）")
     parser.add_argument("--render", action="store_true", help="打开 MuJoCo 窗口实时回放")
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="忽略模型旁的 VecNormalize 统计量，用原始观测评估",
+    )
     args = parser.parse_args(argv)
 
     returns = evaluate(
@@ -59,6 +78,7 @@ def evaluate_main(argv: Sequence[str] | None = None) -> int:
         episodes=args.episodes,
         render=args.render,
         seed=args.seed,
+        load_normalization=not args.raw,
     )
     print(f"\n平均回报: {sum(returns) / len(returns):.2f}")
     return 0
