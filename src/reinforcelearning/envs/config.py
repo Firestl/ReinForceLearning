@@ -29,6 +29,14 @@ JOINT_ORDER: tuple[str, ...] = (
 JOINT_LOWER: tuple[float, ...] = (-0.35, -1.30, 0.00, -0.90, -0.35, -1.30, 0.00, -0.90)
 JOINT_UPPER: tuple[float, ...] = (0.35, 0.80, 2.20, 0.60, 0.35, 0.80, 2.20, 0.60)
 
+# 关节轴契约：roll 绕 x 轴，pitch 绕 y 轴（顺序与 JOINT_ORDER 一致）
+JOINT_AXES: tuple[tuple[float, float, float], ...] = (
+    (1.0, 0.0, 0.0),  # hip roll
+    (0.0, 1.0, 0.0),  # hip pitch
+    (0.0, 1.0, 0.0),  # knee pitch
+    (0.0, 1.0, 0.0),  # ankle pitch
+) * 2
+
 
 @dataclass(frozen=True)
 class RewardConfig:
