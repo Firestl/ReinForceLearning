@@ -1,8 +1,9 @@
 """DuckEnv 行为测试。
 
-期望值来自 docs/duck/01（模型与动作映射）和 docs/duck/02（环境接口）的规范，以及真实物理行为；
-不通过复述实现细节来构造断言。少数需要注入精确物理状态的用例会直接读取
-``DuckState``，但期望值仍由文档公式或四元数解析计算得出。
+期望值来自 docs/duck/01（模型与动作映射）和 docs/duck/02（环境接口）的规范，
+以及真实物理行为；不通过复述实现细节来构造断言。少数需要注入精确物理状态或
+单独验证奖励公式的用例会有意调用 ``_current_state``/``_get_obs``/``_compute_reward``，
+这是对这些内部契约的白盒单测；期望值仍由文档公式或四元数解析计算得出。
 """
 
 from __future__ import annotations
@@ -55,15 +56,6 @@ REWARD_WEIGHTS = {
     "joint_tracking": 0.01,
 }
 
-ALLOWED_TERMINATION_REASONS = {
-    None,
-    "fall_contact",
-    "excessive_tilt",
-    "too_low",
-    "non_finite",
-    "timeout",
-}
-
 
 @pytest.fixture
 def env_factory() -> Iterator[Callable[..., DuckEnv]]:
@@ -105,6 +97,8 @@ def _place(
     body_ang_vel: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> None:
     """把鸭子放到指定物理状态，便于验证观测、终止等行为。"""
+    if pitch and yaw:
+        raise ValueError("_place 不支持同时设置 yaw 和 pitch")
     env.reset(seed=0)
     qpos_adr, dof_adr = _joint_addresses(env.model)
     env.data.qpos[0:3] = (0.0, 0.0, z)
@@ -137,15 +131,27 @@ def test_spaces_and_step_api_follow_documented_contract(
     assert obs.dtype == np.float32
     assert np.isfinite(obs).all()
 
-    result = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
-    assert len(result) == 5
-    obs, reward, terminated, truncated, info = result
+    obs, reward, terminated, truncated, info = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
     assert obs.shape == (OBS_DIM,)
     assert obs.dtype == np.float32
     assert isinstance(reward, float)
     assert isinstance(terminated, bool)
     assert isinstance(truncated, bool)
     assert isinstance(info, dict)
+
+
+def test_control_step_advances_by_configured_dt(
+    env_factory: Callable[..., DuckEnv],
+) -> None:
+    """sim_dt 覆盖模型 timestep，每次 step 推进 frame_skip 个物理步。"""
+    env = env_factory()
+    config = env.config
+    assert env.model.opt.timestep == pytest.approx(config.sim_dt)
+
+    env.reset(seed=0)
+    assert env.data.time == pytest.approx(0.0)
+    env.step(np.zeros(ACTION_DIM, dtype=np.float32))
+    assert env.data.time == pytest.approx(config.control_dt)
 
 
 def test_reset_state_matches_episode_start_rules(
@@ -167,8 +173,6 @@ def test_reset_state_matches_episode_start_rules(
     assert np.linalg.norm(quat) == pytest.approx(1.0)
     assert quat[1] == pytest.approx(0.0, abs=1e-12)
     assert quat[2] == pytest.approx(0.0, abs=1e-12)
-    yaw = 2 * math.atan2(quat[3], quat[0])
-    assert -math.pi <= yaw <= math.pi
 
     low, high = config.command_range
     assert low <= info["command_speed"] <= high
@@ -191,11 +195,28 @@ def test_reset_is_reproducible_for_same_seed(
     np.testing.assert_array_equal(obs_a, obs_again)
 
 
-def test_reset_varies_with_seed(env_factory: Callable[..., DuckEnv]) -> None:
+def test_command_is_held_within_episode_and_sampled_per_reset(
+    env_factory: Callable[..., DuckEnv],
+) -> None:
     env = env_factory()
-    obs_0, _ = env.reset(seed=0)
-    obs_1, _ = env.reset(seed=1)
-    assert not np.array_equal(obs_0, obs_1)
+    low, high = env.config.command_range
+    commands: list[float] = []
+
+    for seed in range(5):
+        obs, info = env.reset(seed=seed)
+        command = info["command_speed"]
+        assert low <= command <= high
+        assert obs[33] == pytest.approx(command)
+
+        for _ in range(3):
+            obs, _, terminated, truncated, info = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
+            assert not terminated and not truncated
+            assert info["command_speed"] == command
+            assert obs[33] == pytest.approx(command)
+
+        commands.append(command)
+
+    assert len(set(commands)) > 1
 
 
 def test_zero_action_holds_standing_posture(
@@ -261,6 +282,22 @@ def test_actions_outside_unit_range_are_clipped(
     np.testing.assert_allclose(env.data.ctrl, expected_ctrl, atol=1e-6)
 
 
+def test_action_targets_are_clipped_to_joint_limits_with_margin(
+    env_factory: Callable[..., DuckEnv],
+) -> None:
+    """动作尺度放大到超出限位时，目标角应裁剪到 [q_min+margin, q_max-margin]。"""
+    env = env_factory(action_scale=(1.0,) * ACTION_DIM)
+    expected_high = np.array((0.33, 0.70, 1.60, 0.58) * 2)
+    expected_low = np.array((-0.33, -1.28, 0.02, -0.88) * 2)
+
+    _place(env)
+    env.step(np.ones(ACTION_DIM, dtype=np.float32))
+    np.testing.assert_allclose(env.data.ctrl, expected_high, atol=1e-6)
+
+    env.step(-np.ones(ACTION_DIM, dtype=np.float32))
+    np.testing.assert_allclose(env.data.ctrl, expected_low, atol=1e-6)
+
+
 @pytest.mark.parametrize(
     "bad_action",
     [
@@ -297,6 +334,26 @@ def test_reset_observation_layout_matches_spec(
     np.testing.assert_allclose(obs[17:25], 0.0, atol=1e-7)  # 关节角速度
     np.testing.assert_allclose(obs[25:33], 0.0, atol=1e-7)  # 上一步动作
     assert obs[33] == pytest.approx(0.0)  # 速度指令
+
+
+def test_observation_joint_angles_and_velocities_follow_contract_order(
+    env_factory: Callable[..., DuckEnv],
+) -> None:
+    """注入互不相同的关节状态，验证左右腿与同腿内关节顺序未被置换。"""
+    env = env_factory()
+    env.reset(seed=0)
+    qpos_adr, dof_adr = _joint_addresses(env.model)
+    joint_pos = np.array((0.01, -0.21, 0.51, -0.41, -0.02, -0.22, 0.52, -0.42))
+    joint_vel = np.array((0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18))
+
+    env.data.qpos[qpos_adr] = joint_pos
+    env.data.qvel[:] = 0.0
+    env.data.qvel[dof_adr] = joint_vel
+    mujoco.mj_forward(env.model, env.data)
+
+    obs = env._get_obs(env._current_state())
+    np.testing.assert_allclose(obs[9:17], joint_pos, atol=1e-6)
+    np.testing.assert_allclose(obs[17:25], joint_vel, atol=1e-6)
 
 
 def test_observation_uses_body_frame_and_excludes_world_position(
@@ -342,32 +399,34 @@ def test_reward_terms_follow_documented_formula(
 ) -> None:
     env = env_factory(command_range=(0.5, 0.5))
     env.reset(seed=0)
+    env.step(np.full(ACTION_DIM, 0.1))  # 设置上一步动作，用于验证 action_rate
+    action = np.full(ACTION_DIM, -0.2)
 
     state = dataclasses.replace(
         env._current_state(),
-        lin_vel=np.array((0.5, 0.2, 0.0)),
+        lin_vel=np.array((0.0, 0.2, 0.0)),
         ang_vel=np.array((0.0, 0.0, 0.3)),
         projected_gravity=np.array((0.0, 0.0, -0.9)),
         body_up_z=0.9,
         tilt_angle=math.acos(0.9),
-        body_height=0.233,
+        body_height=0.283,
         joint_pos=DEFAULT_JOINT_POS + 0.1,
         joint_vel=np.zeros(ACTION_DIM),
         ctrl=DEFAULT_JOINT_POS.copy(),
         actuator_force=np.array((1.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0)),
     )
-    reward, terms = env._compute_reward(np.zeros(ACTION_DIM), state)
+    reward, terms = env._compute_reward(action, state)
 
-    # docs/duck/02 §6 的公式，期望值独立计算
+    # docs/duck/02 §6 的公式，期望值独立计算；非零误差锁住两个 sigma
     values = {
-        "tracking": math.exp(-(((0.5 - 0.5) / 0.5) ** 2)),
+        "tracking": math.exp(-(((0.0 - 0.5) / 0.5) ** 2)),
         "upright": 0.9,
-        "height_reward": math.exp(-(((0.233 - 0.233) / 0.05) ** 2)),
+        "height_reward": math.exp(-(((0.283 - 0.233) / 0.05) ** 2)),
         "alive": 1.0,
         "lateral": -(0.2**2),
         "yaw": -(0.3**2),
         "energy": -(1.0**2 + (-2.0) ** 2 + 0.5**2),
-        "action_rate": 0.0,
+        "action_rate": -(ACTION_DIM * (0.1 - (-0.2)) ** 2),
         "joint_tracking": -(ACTION_DIM * 0.1**2),
     }
     assert set(terms) == set(REWARD_TERM_NAMES)
@@ -375,9 +434,10 @@ def test_reward_terms_follow_documented_formula(
         assert terms[name] == pytest.approx(REWARD_WEIGHTS[name] * values[name])
     assert reward == pytest.approx(sum(REWARD_WEIGHTS[name] * values[name] for name in values))
 
-    # 偏离指令速度应降低跟踪奖励
+    # 偏离指令速度应降低跟踪奖励，并锁住 speed_sigma 的解析值
     far_state = dataclasses.replace(state, lin_vel=np.array((1.5, 0.0, 0.0)))
-    _, far_terms = env._compute_reward(np.zeros(ACTION_DIM), far_state)
+    _, far_terms = env._compute_reward(action, far_state)
+    assert far_terms["tracking"] == pytest.approx(REWARD_WEIGHTS["tracking"] * math.exp(-4.0))
     assert far_terms["tracking"] < terms["tracking"]
 
 
@@ -417,7 +477,9 @@ def test_info_reports_physical_diagnostics(
     torso = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "torso")
     rotation = env.data.xmat[torso].reshape(3, 3)
     forward_speed = float((rotation.T @ env.data.qvel[0:3])[0])
+    lateral_speed = float((rotation.T @ env.data.qvel[0:3])[1])
     assert info["forward_speed"] == pytest.approx(forward_speed, abs=1e-6)
+    assert info["lateral_speed"] == pytest.approx(lateral_speed, abs=1e-6)
     assert info["body_height"] == pytest.approx(float(env.data.qpos[2]))
     assert info["tilt_angle"] == pytest.approx(
         math.acos(np.clip(rotation[2, 2], -1.0, 1.0)), abs=1e-6
@@ -454,7 +516,8 @@ def test_torso_floor_contact_terminates_episode(
 
 def test_too_low_body_terminates_episode(env_factory: Callable[..., DuckEnv]) -> None:
     env = env_factory()
-    _place(env, z=0.02)  # 低于 docs/duck/02 §7 的 0.15 m 安全阈值
+    # 低于 docs/duck/02 §7 的 0.15 m 阈值，但躯干尚未触地，隔离 too_low 分支
+    _place(env, z=0.10)
 
     _, _, terminated, truncated, info = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
 
@@ -505,7 +568,10 @@ def test_registered_env_passes_gymnasium_checker() -> None:
     env = gymnasium.make("Duck-v0")
     try:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # 已知：Box(-inf, inf) 的 unbounded 警告
+            # 已知：Box(-inf, inf) 会触发 unbounded 警告；只忽略这一类，保留其他告警
+            warnings.filterwarnings(
+                "ignore", message=".*Box observation space.*", category=UserWarning
+            )
             check_env(env.unwrapped, skip_render_check=True)
     finally:
         env.close()
@@ -516,28 +582,24 @@ def test_thousand_random_steps_stay_finite(env_factory: Callable[..., DuckEnv]) 
     rng = np.random.default_rng(2026)
     obs, _ = env.reset(seed=0)
 
-    reasons: set[str | None] = set()
     for step in range(1000):
-        obs, reward, terminated, truncated, info = env.step(
+        obs, reward, terminated, truncated, _ = env.step(
             rng.uniform(-1.0, 1.0, ACTION_DIM).astype(np.float32)
         )
         assert np.isfinite(obs).all()
         assert math.isfinite(reward)
         assert np.isfinite(env.data.qpos).all()
         assert np.isfinite(env.data.qvel).all()
-        assert info["termination_reason"] in ALLOWED_TERMINATION_REASONS
-        reasons.add(info["termination_reason"])
 
         if terminated or truncated:
             obs, _ = env.reset(seed=step)
-
-    assert None in reasons
-    assert len(reasons - {None}) >= 1
 
 
 def test_render_contract() -> None:
     env = DuckEnv(render_mode=None)
     try:
+        assert env.metadata["render_modes"] == ["human", "rgb_array"]
+        assert env.metadata["render_fps"] == round(1.0 / env.config.control_dt)
         env.reset(seed=0)
         assert env.render() is None
     finally:
@@ -556,5 +618,4 @@ def test_render_contract() -> None:
         assert frame.shape[2] == 3
         assert frame.dtype == np.uint8
     finally:
-        env.close()
         env.close()

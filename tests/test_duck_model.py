@@ -130,15 +130,27 @@ def test_joint_and_actuator_order_matches_contract(
         assert model.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT
         assert model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_FIXED
         assert model.actuator_biastype[i] == mujoco.mjtBias.mjBIAS_AFFINE
-        np.testing.assert_allclose(
-            model.actuator_ctrlrange[i], [config.joint_lower[i], config.joint_upper[i]]
-        )
+        # docs/duck/01 §6 允许 ctrlrange 与关节限位一致或略小；只需保证不越界，
+        # 且覆盖环境可能写入的动作目标区间（与环境启动校验的条件一致）
+        ctrl_low, ctrl_high = model.actuator_ctrlrange[i]
+        assert ctrl_low >= config.joint_lower[i] - 1e-9
+        assert ctrl_high <= config.joint_upper[i] + 1e-9
+        assert ctrl_low <= config.action_target_low[i] + 1e-9
+        assert ctrl_high >= config.action_target_high[i] - 1e-9
 
 
 def test_contact_masks_allow_floor_and_block_self_collision(model: mujoco.MjModel) -> None:
     floor = _geom_id(model, "floor")
-    duck_geoms = [geom_id for geom_id in range(model.ngeom) if geom_id != floor]
-    assert duck_geoms, "模型应至少包含一个鸭子 geom"
+    # 只检查参与碰撞的 geom；后续视觉 geom 若 contype/conaffinity 为 0，不会被误判
+    duck_geoms = [
+        geom_id
+        for geom_id in range(model.ngeom)
+        if geom_id != floor
+        and (model.geom_contype[geom_id] != 0 or model.geom_conaffinity[geom_id] != 0)
+    ]
+    assert duck_geoms, "模型应至少包含一个鸭子碰撞 geom"
+    for name in ("torso_geom", "head_geom", "left_foot_geom", "right_foot_geom"):
+        assert _geom_id(model, name) in duck_geoms
 
     for geom_id in duck_geoms:
         assert model.geom_contype[geom_id] == DUCK_CONTYPE
