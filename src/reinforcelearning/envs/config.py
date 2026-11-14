@@ -56,6 +56,15 @@ class RewardConfig:
     height_sigma: float = 0.05  # 高度项的高斯宽度 (m)
     height_target: float = 0.233  # 默认站姿 root 高度 (m)
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.height_target):
+            raise ValueError(f"height_target 必须为有限数，实际 {self.height_target}")
+        for name in ("speed_sigma", "height_sigma"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                # sigma <= 0 会在奖励中产生除零/NaN
+                raise ValueError(f"{name} 必须为正有限数，实际 {value}")
+
 
 @dataclass(frozen=True)
 class DuckEnvConfig:
@@ -95,15 +104,44 @@ class DuckEnvConfig:
         for name, value in sizes.items():
             if len(value) != n:
                 raise ValueError(f"{name} 应有 {n} 项，实际 {len(value)} 项")
-        if len(self.command_range) != 2 or self.command_range[0] > self.command_range[1]:
+        if not all(math.isfinite(v) and v > 0 for v in self.action_scale):
+            raise ValueError(f"action_scale 各元素必须为正有限数，实际 {self.action_scale}")
+
+        # 时间参数：sim_dt 是物理步长唯一来源，非法值会导致除零或负步长
+        if not math.isfinite(self.sim_dt) or self.sim_dt <= 0:
+            raise ValueError(f"sim_dt 必须为正有限数，实际 {self.sim_dt}")
+        if not isinstance(self.frame_skip, int) or self.frame_skip < 1:
+            raise ValueError(f"frame_skip 必须为 >= 1 的整数，实际 {self.frame_skip!r}")
+        if not isinstance(self.max_episode_steps, int) or self.max_episode_steps < 1:
             raise ValueError(
-                f"command_range 应为 (low, high) 且 low <= high，实际 {self.command_range}"
+                f"max_episode_steps 必须为 >= 1 的整数，实际 {self.max_episode_steps!r}"
             )
+
+        for name, value in (
+            ("joint_limits_margin", self.joint_limits_margin),
+            ("reset_joint_noise", self.reset_joint_noise),
+            ("reset_velocity_noise", self.reset_velocity_noise),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} 必须为 >= 0 的有限数，实际 {value}")
+
+        for name, value in (("spawn_height", self.spawn_height), ("fall_height", self.fall_height)):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} 必须为有限数，实际 {value}")
         if self.spawn_height <= self.fall_height:
             raise ValueError(
                 f"spawn_height({self.spawn_height}) 必须大于 fall_height({self.fall_height})，"
                 "否则新回合会立即触发 too_low 终止"
             )
+
+        if len(self.command_range) != 2 or not all(
+            math.isfinite(v) for v in self.command_range
+        ):
+            raise ValueError(
+                f"command_range 应为两个有限数 (low, high)，实际 {self.command_range}"
+            )
+        if self.command_range[0] > self.command_range[1]:
+            raise ValueError(f"command_range 应满足 low <= high，实际 {self.command_range}")
 
     @property
     def action_dim(self) -> int:
