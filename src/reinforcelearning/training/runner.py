@@ -1,7 +1,6 @@
-"""PPO 训练与评估的编排层：不解析命令行参数，也不构造环境参数。
+"""PPO 训练执行与策略评估编排层。
 
-对应 SB3 的最小用法：``PPO("MlpPolicy", vec_env).learn(...)``。
-在这里显式写出超参数，便于初学者逐项对照文档调整。
+专注训练控制流，不侵入命令行解析与底层环境构造。
 """
 
 from __future__ import annotations
@@ -13,19 +12,19 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecEnv
 
-import reinforcelearning.envs  # noqa: F401  导入即注册 Duck-v0
+import reinforcelearning.envs  # noqa: F401
 from reinforcelearning.training.config import TrainConfig, vecnormalize_file_for
 from reinforcelearning.training.env_factory import make_vec_env
 from reinforcelearning.training.vec_normalize import DuckVecNormalize
 
 
 def build_model(vec_env: VecEnv, config: TrainConfig) -> PPO:
-    """在已构造的向量化环境上创建 PPO 模型；环境生命周期由调用方管理。"""
+    """基于向量化环境初始化 PPO 模型；超参显式声明。"""
     return PPO(
         "MlpPolicy",
         vec_env,
         learning_rate=3e-4,
-        n_steps=2048,  # 每个环境每次更新采集的步数
+        n_steps=2048,  # 单个环境每次更新采样的步数
         batch_size=64,
         gamma=config.gamma,
         verbose=1,
@@ -36,7 +35,7 @@ def build_model(vec_env: VecEnv, config: TrainConfig) -> PPO:
 
 
 def train(config: TrainConfig) -> Path:
-    """训练 PPO 并保存模型；启用归一化时同时保存统计量。"""
+    """执行 PPO 训练循环并成对持久化模型权重与归一化统计量。"""
     vec_env = make_vec_env(
         n_envs=config.n_envs,
         seed=config.seed,
@@ -51,7 +50,7 @@ def train(config: TrainConfig) -> Path:
         model.save(config.model_file)
         if config.normalize:
             if not isinstance(vec_env, DuckVecNormalize):
-                raise RuntimeError("normalize=True 但环境未套 DuckVecNormalize")
+                raise RuntimeError("normalize=True 但环境未挂载 DuckVecNormalize")
             vec_env.save(str(config.vecnormalize_file))
     finally:
         vec_env.close()
@@ -65,7 +64,7 @@ def _make_eval_env(
     render: bool,
     load_normalization: bool,
 ) -> VecEnv:
-    """构造评估环境；统计量文件存在时加载并冻结。"""
+    """装配单进程评估环境；存在统计量时加载并冻结更新。"""
     vec_env = make_vec_env(
         n_envs=1,
         seed=seed,
@@ -84,8 +83,9 @@ def _make_eval_env(
     except Exception:
         vec_env.close()
         raise
-    normalized_env.training = False
-    normalized_env.norm_reward = False
+
+    normalized_env.training = False     # 冻结统计量
+    normalized_env.norm_reward = False  # 汇报原始真实物理奖励
     print(f"加载归一化统计量: {normalize_file}")
     return normalized_env
 
@@ -98,12 +98,7 @@ def evaluate(
     seed: int = 0,
     load_normalization: bool = True,
 ) -> list[float]:
-    """用确定性策略跑若干回合，返回每回合总回报。
-
-    模型旁若存在 ``*_vecnormalize.pkl`` 且 ``load_normalization=True``，会自动
-    加载并冻结统计量；否则按原始观测评估。评估循环基于单环境 ``VecEnv``，
-    以便复用训练时的包装，并支持 ``--render`` 实时观看。
-    """
+    """回放确定性策略并统计各回合总回报。"""
     if episodes < 1:
         raise ValueError(f"episodes 必须为 >= 1 的整数，实际 {episodes}")
 
@@ -122,15 +117,18 @@ def evaluate(
         assert isinstance(obs, np.ndarray)
         current_return = 0.0
         steps = 0
+
         while len(returns) < episodes:
             actions, _ = model.predict(obs, deterministic=True)
             obs, rewards, dones, infos = vec_env.step(actions)
             assert isinstance(obs, np.ndarray)
             current_return += float(rewards[0])
             steps += 1
+
             if render:
                 vec_env.env_method("render")
                 time.sleep(frame_period)
+
             if bool(dones[0]):
                 info = infos[0]
                 episode_stats = info.get("episode")

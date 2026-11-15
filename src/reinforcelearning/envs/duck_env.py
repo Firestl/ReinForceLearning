@@ -1,4 +1,7 @@
-"""鸭形机器人 Gymnasium 环境，实现规范见 docs/duck/02-physics-environment.md。"""
+"""鸭形双足机器人 Gymnasium 环境规范实现。
+
+遵循 docs/duck/02-physics-environment.md 接口定义。
+"""
 
 from __future__ import annotations
 
@@ -19,8 +22,7 @@ from reinforcelearning.envs.config import (
 )
 from reinforcelearning.envs.model_contract import DuckModelContract
 
-# 表示物理状态非有限的 MuJoCo 警告；数值异常时 MuJoCo 会自动重置 qpos，
-# 因此事后检查 qpos 的有限性不够，需要监视警告计数
+# 数值发散时 MuJoCo 会自动将 qpos 归零重置；单靠检查有限性会漏报崩溃，需监控 warning 计数
 _PHYSICS_WARNINGS = (
     mujoco.mjtWarning.mjWARN_BADQPOS,
     mujoco.mjtWarning.mjWARN_BADQVEL,
@@ -31,7 +33,7 @@ _PHYSICS_WARNINGS = (
 
 @dataclass(frozen=True, slots=True)
 class DuckState:
-    """单步物理状态快照；观测、奖励与终止都消费同一份数据。"""
+    """单步物理快照；观测、奖励与终止准则消费同一份不可变数据。"""
 
     lin_vel: np.ndarray
     ang_vel: np.ndarray
@@ -48,7 +50,7 @@ class DuckState:
 
 
 class ContactFlags(NamedTuple):
-    """接触检测结果（左脚、右脚、躯干/头部触地）。"""
+    """关键接触标志位。"""
 
     left: bool
     right: bool
@@ -56,10 +58,8 @@ class ContactFlags(NamedTuple):
 
 
 class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
-    """平地直线行走的鸭形双足环境（位置执行器、本体感知观测）。"""
+    """平地直线行走的鸭形双足环境（位置执行器驱动，本体感知观测）。"""
 
-    # 类级模板，__init__ 中合并为实例副本；模板本身从不被原地修改。
-    # gymnasium.Env 基类契约即如此声明（core.py 的 metadata），故豁免 RUF012。
     metadata: dict[str, Any] = {"render_modes": ["human", "rgb_array"]}  # noqa: RUF012
 
     def __init__(
@@ -71,7 +71,7 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
         self.config = config if config is not None else DuckEnvConfig()
         cfg = self.config
 
-        # 实例级 metadata：render_fps 按实际控制周期推导，避免与 frame_skip/sim_dt 脱节
+        # 帧率与物理周期绑定：render_fps = 1 / control_dt
         self.metadata = {**type(self).metadata, "render_fps": round(1.0 / cfg.control_dt)}
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(
@@ -80,11 +80,9 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
         self.render_mode = render_mode
 
         self.model = mujoco.MjModel.from_xml_path(str(cfg.model_path))
-        # sim_dt 是物理步长的唯一来源，覆盖 XML 中的 timestep
-        self.model.opt.timestep = cfg.sim_dt
+        self.model.opt.timestep = cfg.sim_dt  # sim_dt 覆盖 XML timestep，保证步长唯一来源
         self.data = mujoco.MjData(self.model)
 
-        # 名称解析、维度/关节/执行器校验与接触 id 统一由模型契约负责
         self._model_contract = DuckModelContract.from_model(self.model, cfg)
 
         self.action_space = spaces.Box(
@@ -94,7 +92,6 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
             low=-np.inf, high=np.inf, shape=(cfg.obs_dim,), dtype=np.float32
         )
 
-        # 动作映射后的可达目标区间；也是写入 ctrl 前的裁剪边界
         self._ctrl_low = np.asarray(cfg.action_target_low)
         self._ctrl_high = np.asarray(cfg.action_target_high)
 
@@ -105,24 +102,23 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
         self._viewer: Any = None
         self._renderer: Any = None
 
-    # ------------------------------------------------------------------ 核心接口
+    # ------------------------------------------------------------------ 核心生命周期
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
         super().reset(seed=seed)
         cfg = self.config
-        _ = options  # 第一版不使用 reset 选项
+        _ = options
 
         mujoco.mj_resetData(self.model, self.data)
 
-        # 根节点：初始站立高度 + 随机朝向（绕 z 轴 ±pi）
+        # 随机偏航角初始位姿
         yaw = self.np_random.uniform(-np.pi, np.pi)
-        self.data.qpos[0:3] = 0.0
-        self.data.qpos[2] = cfg.spawn_height
+        self.data.qpos[0:3] = (0.0, 0.0, cfg.spawn_height)
         self.data.qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
 
-        # 关节默认姿态 + 小幅噪声；速度置零 + 极小噪声
+        # 关节注入初始化噪声
         qpos_adr = self._model_contract.qpos_adr
         self.data.qpos[qpos_adr] = cfg.default_joint_pos
         self.data.qpos[qpos_adr] += self.np_random.uniform(
@@ -140,25 +136,14 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
         mujoco.mj_forward(self.model, self.data)
         state = self._current_state()
         contacts = self._contact_flags()
-        info = self._build_info(state=state, contacts=contacts)
-        return self._get_obs(state), info
+        return self._get_obs(state), self._build_info(state, contacts)
 
     def step(
         self, action: npt.NDArray[np.float32]
     ) -> tuple[npt.NDArray[np.float32], float, bool, bool, dict[str, Any]]:
         cfg = self.config
-        # 动作空间契约是 float32；内部统一转为 float64 平面向量（MuJoCo 数据为 float64）
-        action_vec = np.asarray(action, dtype=np.float64).reshape(-1)
-        if action_vec.shape != (cfg.action_dim,):
-            raise ValueError(f"动作维度应为 {cfg.action_dim}，实际 shape={action_vec.shape}")
-        if not np.isfinite(action_vec).all():
-            # fail-fast：NaN/Inf 进入 ctrl 会产生 NaN 奖励/观测并污染训练 buffer
-            raise ValueError("action 含 NaN/Inf，拒绝执行")
-        action_vec = np.clip(action_vec, -1.0, 1.0)
-
-        # 归一化动作 -> 目标关节角 -> 限位内裁剪 -> 位置执行器
-        q_target = cfg.default_joint_pos + cfg.action_scale * action_vec
-        self.data.ctrl[:] = np.clip(q_target, self._ctrl_low, self._ctrl_high)
+        action_vec = self._sanitize_action(action)
+        self._apply_action(action_vec)
 
         for _ in range(cfg.frame_skip):
             mujoco.mj_step(self.model, self.data)
@@ -187,7 +172,6 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
                 self._renderer = mujoco.Renderer(self.model, height=480, width=640)
             self._renderer.update_scene(self.data)
             return self._renderer.render()
-        # human
         if self._viewer is None:
             from mujoco import viewer as viewer_module
 
@@ -204,16 +188,32 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
             self._renderer.close()
             self._renderer = None
 
-    # ------------------------------------------------------------------ 状态与观测
+    # ------------------------------------------------------------------ 动作与状态变换
+
+    def _sanitize_action(self, action: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
+        """校验并裁剪归一化动作输入向量。"""
+        vec = np.asarray(action, dtype=np.float64).reshape(-1)
+        if vec.shape != (self.config.action_dim,):
+            raise ValueError(f"动作维度应为 {self.config.action_dim}，实际 shape={vec.shape}")
+        if not np.isfinite(vec).all():
+            raise ValueError("动作含非有限值 (NaN/Inf)，拒绝执行")
+        return np.clip(vec, -1.0, 1.0)
+
+    def _apply_action(self, action_vec: npt.NDArray[np.float64]) -> None:
+        """映射归一化动作至位置执行器控制信号并施加安全截断。"""
+        cfg = self.config
+        q_target = cfg.default_joint_pos + cfg.action_scale * action_vec
+        self.data.ctrl[:] = np.clip(q_target, self._ctrl_low, self._ctrl_high)
 
     def _current_state(self) -> DuckState:
-        """从 MjData 提取单步快照；观测、奖励与终止只消费这一份数据。"""
+        """提取动力学快照；观测、奖励与终止判断共享此单步数据。"""
         rotation = self.data.xmat[self._model_contract.torso_body].reshape(3, 3)
-        lin_vel = rotation.T @ self.data.qvel[0:3]  # 世界系 -> 身体系
-        ang_vel = self.data.qvel[3:6].copy()  # free joint 角速度本身就是 body 系，不可再旋转
-        projected_gravity = -rotation[2, :]  # R^T @ (0, 0, -1)
+        lin_vel = rotation.T @ self.data.qvel[0:3]  # 世界坐标系 -> 机体坐标系
+        ang_vel = self.data.qvel[3:6].copy()       # freejoint 角速度原生即为机体坐标系
+        projected_gravity = -rotation[2, :]        # R^T @ (0, 0, -1)
         body_up_z = -projected_gravity[2]
         tilt = float(np.arccos(np.clip(body_up_z, -1.0, 1.0)))
+
         return DuckState(
             lin_vel=lin_vel,
             ang_vel=ang_vel,
@@ -244,14 +244,12 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
             ]
         ).astype(np.float32)
 
-    # ------------------------------------------------------------------ 奖励与终止
+    # ------------------------------------------------------------------ 奖励与终止判定
 
     def _compute_reward(
         self, action: npt.NDArray[np.float64], state: DuckState
     ) -> tuple[float, RewardTerms]:
-        cfg = self.config
-        rc = cfg.reward
-
+        rc = self.config.reward
         speed_error = float(state.lin_vel[0]) - self._command
         tracking = float(np.exp(-((speed_error / rc.speed_sigma) ** 2)))
         upright = float(np.clip(state.body_up_z, 0.0, 1.0))
@@ -260,7 +258,6 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
         )
         joint_tracking_error = state.joint_pos - state.ctrl
 
-        # 未加权的分项值；键集与权重字段名均由 REWARD_TERM_KEYS 派生
         reward_values: dict[RewardTerm, float] = {
             "tracking": tracking,
             "upright": upright,
@@ -291,21 +288,19 @@ class DuckEnv(gymnasium.Env[npt.NDArray[np.float32], npt.NDArray[np.float32]]):
             return True, "too_low"
         return False, None
 
-    # ------------------------------------------------------------------ 接触与 info
+    # ------------------------------------------------------------------ 接触与诊断信息
 
     def _physics_warning_count(self) -> int:
-        """累计的物理状态警告数（BADQPOS/BADQVEL/BADQACC/BADCTRL）。"""
         return int(sum(self.data.warning[w].number for w in _PHYSICS_WARNINGS))
 
     def _contact_flags(self) -> ContactFlags:
-        """返回左脚/右脚/躯干头部触地标志。"""
+        """判定左脚、右脚及躯干/头部的触地接触状态。"""
         contract = self._model_contract
         left = right = fall = False
         for i in range(self.data.ncon):
-            contact = self.data.contact[i]
-            pair = {contact.geom1, contact.geom2}
+            pair = {self.data.contact[i].geom1, self.data.contact[i].geom2}
             if contract.floor_geom not in pair:
-                continue  # 自碰撞已通过 contype/conaffinity 关闭
+                continue  # 鸭体自碰撞已由 contype/conaffinity 掩码隔离
             other = next(g for g in pair if g != contract.floor_geom)
             if other == contract.left_foot_geom:
                 left = True

@@ -1,6 +1,6 @@
-"""PPO 训练与评估的运行参数。
+"""PPO 训练与评估参数配置。
 
-与 ``DuckEnvConfig`` 分离：环境契约描述物理世界，训练配置描述一次实验。
+与物理环境契约 (DuckEnvConfig) 解耦：环境定义物理规则，本配置定义算法实验环境。
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ DEFAULT_LOG_DIR = Path("runs")
 
 
 def vecnormalize_file_for(model_path: Path) -> Path:
-    """由模型路径推导 ``VecNormalize`` 统计量文件路径。"""
+    """推导与模型同名配对的 VecNormalize 统计量文件路径 (*_vecnormalize.pkl)。"""
     model_file = model_path if model_path.suffix == ".zip" else model_path.with_suffix(".zip")
     return model_file.with_name(f"{model_file.stem}_vecnormalize.pkl")
 
 
 def _require_int(name: str, value: object, *, minimum: int) -> None:
-    """校验整数字段；``bool`` 是 ``int`` 的子类，必须显式拒绝。"""
+    # 严格类型防护：bool 是 int 的子类，必须显式拦截避免漏判
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} 必须为 int，实际 {value!r}")
     if value < minimum:
@@ -29,7 +29,7 @@ def _require_int(name: str, value: object, *, minimum: int) -> None:
 
 @dataclass(frozen=True, slots=True)
 class TrainConfig:
-    """一次 PPO 训练实验的规模与输出位置。"""
+    """PPO 算法实验超参数与输出路径配置。"""
 
     total_timesteps: int = 100_000
     n_envs: int = 4
@@ -67,12 +67,10 @@ class TrainConfig:
 
     @property
     def model_file(self) -> Path:
-        """模型文件的最终路径：统一补上 SB3 使用的 ``.zip`` 后缀。"""
-        if self.model_path.suffix == ".zip":
-            return self.model_path
-        return self.model_path.with_suffix(".zip")
+        """模型最终持久化路径（确保具备 .zip 后缀）。"""
+        return self.model_path if self.model_path.suffix == ".zip" else self.model_path.with_suffix(".zip")
 
     @property
     def vecnormalize_file(self) -> Path:
-        """``VecNormalize`` 统计量文件：与模型同目录、同 stem 的 ``.pkl``。"""
+        """与模型同名配对的 VecNormalize 统计量文件路径。"""
         return vecnormalize_file_for(self.model_file)

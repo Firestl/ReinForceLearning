@@ -18,7 +18,7 @@ from reinforcelearning.envs.config import JOINT_ORDER, DuckEnvConfig
 FREE_JOINT_QPOS = 7
 FREE_JOINT_QVEL = 6
 
-# docs/duck/01 §7：鸭子 geom 统一 contype=2/conaffinity=1，与地面(1/1)接触、鸭子之间不接触
+# 契约镜像：鸭子 geom 统一 contype=2/conaffinity=1，与地面(1/1)接触、鸭子之间不接触
 DUCK_CONTYPE = 2
 DUCK_CONAFFINITY = 1
 
@@ -130,7 +130,7 @@ def test_joint_and_actuator_order_matches_contract(
         assert model.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT
         assert model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_FIXED
         assert model.actuator_biastype[i] == mujoco.mjtBias.mjBIAS_AFFINE
-        # docs/duck/01 §6 允许 ctrlrange 与关节限位一致或略小；只需保证不越界，
+        # 模型文档「执行器」允许 ctrlrange 与关节限位一致或略小；只需保证不越界，
         # 且覆盖环境可能写入的动作目标区间（与环境启动校验的条件一致）
         ctrl_low, ctrl_high = model.actuator_ctrlrange[i]
         assert ctrl_low >= config.joint_lower[i] - 1e-9

@@ -1,8 +1,8 @@
-"""Duck 专用的 ``VecNormalize``：归一化除速度指令外的所有观测维度。
+"""Duck 专用向量化归一化包装器。
 
-``command_speed`` 的物理范围会随课程学习变化，若参与运行统计，策略对同一
-指令的理解会在训练中途漂移。这里保留该维原始值，其余维度交给 SB3 的
-``VecNormalize`` 在线统计。
+保留 command_speed 的物理量纲，仅对动力学感知观测进行在线统计与标准化。
+若 command 参与动态均值方差统计，随着课程学习扩展指令范围，网络对已有指令的
+语义表征会发生灾难性漂移。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from stable_baselines3.common.vec_env import VecEnv, VecNormalize
 
 
 class DuckVecNormalize(VecNormalize):
-    """只归一化 Box 观测中非 command 维度的 ``VecNormalize``。"""
+    """仅对 Box 观测中非 command 维度执行标准化的包装器。"""
 
     def __init__(
         self,
@@ -39,7 +39,8 @@ class DuckVecNormalize(VecNormalize):
             epsilon=epsilon,
         )
         if not isinstance(venv.observation_space, gymnasium.spaces.Box):
-            raise TypeError("DuckVecNormalize 仅支持 Box 观测")
+            raise TypeError("DuckVecNormalize 仅支持 Box 观测空间")
+
         shape = venv.observation_space.shape
         assert shape is not None
         obs_dim = int(shape[0])
@@ -50,15 +51,16 @@ class DuckVecNormalize(VecNormalize):
 
     @staticmethod
     def load(load_path: str, venv: VecEnv) -> DuckVecNormalize:
-        """加载统计量，并校验文件确实由 ``DuckVecNormalize`` 保存。"""
+        """从持久化文件反序列化，并严格校验类型契约。"""
         loaded = VecNormalize.load(load_path, venv)
         if not isinstance(loaded, DuckVecNormalize):
-            raise TypeError(f"{load_path} 不是 DuckVecNormalize 统计量文件")
+            raise TypeError(f"{load_path} 非 DuckVecNormalize 统计量文件")
         return loaded
 
     def normalize_obs(
         self, obs: np.ndarray | dict[str, np.ndarray]
     ) -> np.ndarray | dict[str, np.ndarray]:
+        """对输入观测执行标准化，并在末尾还原原始 command 维度。"""
         if not isinstance(obs, np.ndarray):
             raise TypeError("DuckVecNormalize 仅支持 ndarray 观测")
         normalized = super().normalize_obs(obs)
@@ -69,6 +71,7 @@ class DuckVecNormalize(VecNormalize):
     def unnormalize_obs(
         self, obs: np.ndarray | dict[str, np.ndarray]
     ) -> np.ndarray | dict[str, np.ndarray]:
+        """还原标准化观测，保持 command 维度不变。"""
         if not isinstance(obs, np.ndarray):
             raise TypeError("DuckVecNormalize 仅支持 ndarray 观测")
         unnormalized = super().unnormalize_obs(obs)

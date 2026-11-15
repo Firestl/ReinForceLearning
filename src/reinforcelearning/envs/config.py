@@ -1,7 +1,7 @@
-"""鸭子环境与奖励参数的集中配置。
+"""鸭形机器人环境配置与动力学契约唯一来源。
 
-本模块是 docs/duck/02-physics-environment.md §11 所述配置项的唯一来源；
-环境运行时会校验这里的契约值与 MJCF 模型一致。
+本模块统领所有物理参数、接口维度与奖励权重。
+文档（docs/duck/）提供物理意图，此处提供不可变参数事实源。
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Literal, get_args
 
-# 模型资产路径：基于 __file__ 解析，不依赖当前工作目录
+# 物理模型资产路径（基于 __file__ 绝对解析）
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 DEFAULT_MODEL_PATH = ASSETS_DIR / "duck.xml"
 
-# 固定关节顺序：观测、动作、q_default/action_scale 与 XML 执行器顺序共用此契约
+# 全局固定关节拓扑契约：左腿 4 自由度 + 右腿 4 自由度
 JOINT_ORDER: tuple[str, ...] = (
     "left_hip_roll",
     "left_hip_pitch",
@@ -30,16 +30,15 @@ JOINT_ORDER: tuple[str, ...] = (
 JOINT_LOWER: tuple[float, ...] = (-0.35, -1.30, 0.00, -0.90, -0.35, -1.30, 0.00, -0.90)
 JOINT_UPPER: tuple[float, ...] = (0.35, 0.80, 2.20, 0.60, 0.35, 0.80, 2.20, 0.60)
 
-# 关节轴契约：roll 绕 x 轴，pitch 绕 y 轴（顺序与 JOINT_ORDER 一致）
+# 关节旋转轴定义：hip_roll 绕 x 轴，其余均绕 y 轴
 JOINT_AXES: tuple[tuple[float, float, float], ...] = (
-    (1.0, 0.0, 0.0),  # hip roll
-    (0.0, 1.0, 0.0),  # hip pitch
-    (0.0, 1.0, 0.0),  # knee pitch
-    (0.0, 1.0, 0.0),  # ankle pitch
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 1.0, 0.0),
 ) * 2
 
-
-# 奖励分项键的唯一来源：顺序即 info["reward_terms"] 的顺序，权重字段由 "<term>_weight" 约定派生
+# 奖励分项键集合：排序决定 info["reward_terms"] 的输出顺序
 RewardTerm = Literal[
     "tracking",
     "upright",
@@ -57,7 +56,7 @@ RewardTerms = dict[RewardTerm, float]
 
 @dataclass(frozen=True)
 class RewardConfig:
-    """奖励权重与形状参数；权重集中于此，不散落在 ``step()`` 中。"""
+    """奖励权重与形状参数配置；集中管理，禁止在仿真循环中硬编码。"""
 
     tracking_weight: float = 1.0
     upright_weight: float = 0.5
@@ -69,40 +68,36 @@ class RewardConfig:
     action_rate_weight: float = 0.01
     joint_tracking_weight: float = 0.01
 
-    speed_sigma: float = 0.5  # 速度跟踪项的高斯宽度 (m/s)
-    height_sigma: float = 0.05  # 高度项的高斯宽度 (m)
+    speed_sigma: float = 0.5    # 速度跟踪高斯宽度 (m/s)
+    height_sigma: float = 0.05  # 站立高度高斯宽度 (m)
     height_target: float = 0.233  # 默认站姿 root 高度 (m)
 
     def __post_init__(self) -> None:
-        # 权重字段必须与奖励分项键一一对应，避免 info["reward_terms"] 静默缺项
+        # 强制字段与分项严格同构，避免静默缺项
         weight_names = {f.name for f in fields(self) if f.name.endswith("_weight")}
         expected_names = {f"{term}_weight" for term in REWARD_TERM_KEYS}
         if weight_names != expected_names:
             raise ValueError(
-                "RewardConfig 权重字段与奖励分项不一致: "
-                f"多余={sorted(weight_names - expected_names)}，"
+                f"权重字段不匹配: 多余={sorted(weight_names - expected_names)}, "
                 f"缺失={sorted(expected_names - weight_names)}"
             )
 
-        # 权重为奖励分项的系数；NaN/Inf 会静默污染奖励与训练 buffer
         for term in REWARD_TERM_KEYS:
-            name = f"{term}_weight"
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(f"{name} 必须为有限数，实际 {value}")
+            val = getattr(self, f"{term}_weight")
+            if not math.isfinite(val):
+                raise ValueError(f"{term}_weight 必须为有限数，实际 {val}")
 
         if not math.isfinite(self.height_target):
             raise ValueError(f"height_target 必须为有限数，实际 {self.height_target}")
         for name in ("speed_sigma", "height_sigma"):
-            value = getattr(self, name)
-            if not math.isfinite(value) or value <= 0:
-                # sigma <= 0 会在奖励中产生除零/NaN
-                raise ValueError(f"{name} 必须为正有限数，实际 {value}")
+            val = getattr(self, name)
+            if not math.isfinite(val) or val <= 0:
+                raise ValueError(f"{name} 必须为正有限数，实际 {val}")
 
 
 @dataclass(frozen=True)
 class DuckEnvConfig:
-    """DuckEnv 的运行参数。字段含义见 docs/duck/02-physics-environment.md。"""
+    """DuckEnv 动力学与控制参数配置。"""
 
     model_path: Path = DEFAULT_MODEL_PATH
     sim_dt: float = 0.002
@@ -116,8 +111,7 @@ class DuckEnvConfig:
     joint_limits_margin: float = 0.02
 
     command_range: tuple[float, float] = (0.0, 1.0)
-
-    spawn_height: float = 0.233  # 重置时的初始 root 高度；与奖励的 height_target 解耦
+    spawn_height: float = 0.233  # 重置 root 高度；与奖励 target 独立解耦
     fall_height: float = 0.15
     max_tilt: float = math.radians(60.0)
 
@@ -129,88 +123,71 @@ class DuckEnvConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_path", Path(self.model_path))
         n = len(JOINT_ORDER)
-        sizes = {
-            "default_joint_pos": self.default_joint_pos,
-            "action_scale": self.action_scale,
-            "joint_lower": self.joint_lower,
-            "joint_upper": self.joint_upper,
-        }
-        for name, value in sizes.items():
-            if len(value) != n:
-                raise ValueError(f"{name} 应有 {n} 项，实际 {len(value)} 项")
+
+        # 1. 数组维度与正定性校验
+        for name, arr in (
+            ("default_joint_pos", self.default_joint_pos),
+            ("action_scale", self.action_scale),
+            ("joint_lower", self.joint_lower),
+            ("joint_upper", self.joint_upper),
+        ):
+            if len(arr) != n:
+                raise ValueError(f"{name} 长度应为 {n}，实际 {len(arr)}")
+
         if not all(math.isfinite(v) and v > 0 for v in self.action_scale):
-            raise ValueError(f"action_scale 各元素必须为正有限数，实际 {self.action_scale}")
+            raise ValueError(f"action_scale 元素必须为正有限数，实际 {self.action_scale}")
 
-        # 关节数组契约：限位区间非退化，默认姿态落在限位内
-        if not all(math.isfinite(q) for q in self.default_joint_pos):
-            raise ValueError(f"default_joint_pos 各元素必须为有限数，实际 {self.default_joint_pos}")
+        # 2. 关节限位区间与初始姿态合法性
         for i, name in enumerate(JOINT_ORDER):
-            lower, upper = self.joint_lower[i], self.joint_upper[i]
-            if not (math.isfinite(lower) and math.isfinite(upper)) or lower >= upper:
-                raise ValueError(
-                    f"joint_lower/joint_upper 第 {i} 项（{name}）应为有限数且 lower < upper，"
-                    f"实际 ({lower}, {upper})"
-                )
-            q = self.default_joint_pos[i]
-            if not lower <= q <= upper:
-                raise ValueError(
-                    f"default_joint_pos 第 {i} 项（{name}）应在关节限位 "
-                    f"[{lower}, {upper}] 内，实际 {q}"
-                )
+            lo, hi = self.joint_lower[i], self.joint_upper[i]
+            q0 = self.default_joint_pos[i]
+            if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+                raise ValueError(f"{name} 限位区间无效: ({lo}, {hi})")
+            if not (lo <= q0 <= hi):
+                raise ValueError(f"{name} 默认姿态 {q0} 超出限位 [{lo}, {hi}]")
 
-        # 时间参数：sim_dt 是物理步长唯一来源，非法值会导致除零或负步长
+        # 3. 时间与控制参数
         if not math.isfinite(self.sim_dt) or self.sim_dt <= 0:
             raise ValueError(f"sim_dt 必须为正有限数，实际 {self.sim_dt}")
-        if not isinstance(self.frame_skip, int) or self.frame_skip < 1:
-            raise ValueError(f"frame_skip 必须为 >= 1 的整数，实际 {self.frame_skip!r}")
-        if not isinstance(self.max_episode_steps, int) or self.max_episode_steps < 1:
-            raise ValueError(
-                f"max_episode_steps 必须为 >= 1 的整数，实际 {self.max_episode_steps!r}"
-            )
+        for name, val in (
+            ("frame_skip", self.frame_skip),
+            ("max_episode_steps", self.max_episode_steps),
+        ):
+            if not isinstance(val, int) or val < 1:
+                raise ValueError(f"{name} 必须为正整数，实际 {val!r}")
 
-        for name, value in (
+        for name, val in (
             ("joint_limits_margin", self.joint_limits_margin),
             ("reset_joint_noise", self.reset_joint_noise),
             ("reset_velocity_noise", self.reset_velocity_noise),
         ):
-            if not math.isfinite(value) or value < 0:
-                raise ValueError(f"{name} 必须为 >= 0 的有限数，实际 {value}")
+            if not math.isfinite(val) or val < 0:
+                raise ValueError(f"{name} 必须为非负有限数，实际 {val}")
 
-        # 动作裁剪区间为 [lower + margin, upper - margin]，必须非空
+        # 4. 动作有效控制区间非空校验
         for i, name in enumerate(JOINT_ORDER):
-            low = self.joint_lower[i] + self.joint_limits_margin
-            high = self.joint_upper[i] - self.joint_limits_margin
-            if low > high:
-                raise ValueError(
-                    f"joint_limits_margin({self.joint_limits_margin}) 使第 {i} 项（{name}）"
-                    f"裁剪区间为空: [{low}, {high}]"
-                )
+            clip_lo = self.joint_lower[i] + self.joint_limits_margin
+            clip_hi = self.joint_upper[i] - self.joint_limits_margin
+            if clip_lo > clip_hi:
+                raise ValueError(f"joint_limits_margin 导致 {name} 裁剪区间为空: [{clip_lo}, {clip_hi}]")
 
-        # 动作映射后的可达目标区间 = [default ± action_scale] ∩ 上述裁剪区间
-        target_low, target_high = self.action_target_low, self.action_target_high
         for i, name in enumerate(JOINT_ORDER):
-            if target_low[i] > target_high[i]:
-                raise ValueError(
-                    f"default_joint_pos/action_scale 使第 {i} 项（{name}）动作目标区间为空: "
-                    f"[{target_low[i]}, {target_high[i]}]"
-                )
+            if self.action_target_low[i] > self.action_target_high[i]:
+                raise ValueError(f"{name} 动作目标区间为空: [{self.action_target_low[i]}, {self.action_target_high[i]}]")
 
-        for name, value in (("spawn_height", self.spawn_height), ("fall_height", self.fall_height)):
-            if not math.isfinite(value):
-                raise ValueError(f"{name} 必须为有限数，实际 {value}")
+        # 5. 几何高度与姿态阈值
+        if not (math.isfinite(self.spawn_height) and math.isfinite(self.fall_height)):
+            raise ValueError("spawn_height 与 fall_height 必须为有限数")
         if self.spawn_height <= self.fall_height:
-            raise ValueError(
-                f"spawn_height({self.spawn_height}) 必须大于 fall_height({self.fall_height})，"
-                "否则新回合会立即触发 too_low 终止"
-            )
-        # tilt_angle 在 [0, pi]；max_tilt <= 0 会让回合在重置后立即触发 excessive_tilt
+            raise ValueError(f"spawn_height({self.spawn_height}) 必须大于 fall_height({self.fall_height})")
+
         if not math.isfinite(self.max_tilt) or self.max_tilt <= 0:
             raise ValueError(f"max_tilt 必须为正有限数，实际 {self.max_tilt}")
 
         if len(self.command_range) != 2 or not all(math.isfinite(v) for v in self.command_range):
-            raise ValueError(f"command_range 应为两个有限数 (low, high)，实际 {self.command_range}")
+            raise ValueError(f"command_range 必须为包含两个有限数的元组，实际 {self.command_range}")
         if self.command_range[0] > self.command_range[1]:
-            raise ValueError(f"command_range 应满足 low <= high，实际 {self.command_range}")
+            raise ValueError(f"command_range 必须满足 min <= max，实际 {self.command_range}")
 
     @property
     def action_dim(self) -> int:
@@ -218,27 +195,23 @@ class DuckEnvConfig:
 
     @property
     def action_target_low(self) -> tuple[float, ...]:
-        """动作映射后可写入 ctrl 的目标角下限（default - scale 与限位内收缩的交集）。"""
+        """名义目标角下界 (default - scale) 与限位内收缩边界的交集。"""
         return tuple(
-            max(default - scale, lower + self.joint_limits_margin)
-            for default, scale, lower in zip(
-                self.default_joint_pos, self.action_scale, self.joint_lower, strict=True
-            )
+            max(q0 - s, lo + self.joint_limits_margin)
+            for q0, s, lo in zip(self.default_joint_pos, self.action_scale, self.joint_lower, strict=True)
         )
 
     @property
     def action_target_high(self) -> tuple[float, ...]:
-        """动作映射后可写入 ctrl 的目标角上限（default + scale 与限位内收缩的交集）。"""
+        """名义目标角上界 (default + scale) 与限位内收缩边界的交集。"""
         return tuple(
-            min(default + scale, upper - self.joint_limits_margin)
-            for default, scale, upper in zip(
-                self.default_joint_pos, self.action_scale, self.joint_upper, strict=True
-            )
+            min(q0 + s, hi - self.joint_limits_margin)
+            for q0, s, hi in zip(self.default_joint_pos, self.action_scale, self.joint_upper, strict=True)
         )
 
     @property
     def obs_dim(self) -> int:
-        # 3 基座线速度 + 3 基座角速度 + 3 重力投影 + 3*action_dim（关节角/角速度/上步动作）+ 1 指令
+        # 3(线速度) + 3(角速度) + 3(重力投影) + 3*action_dim(位置/速度/上步动作) + 1(目标速度指令)
         return 10 + 3 * self.action_dim
 
     @property

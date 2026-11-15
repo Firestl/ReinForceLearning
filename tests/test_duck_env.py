@@ -27,12 +27,12 @@ from reinforcelearning.envs.duck_env import DuckEnv
 OBS_DIM = 34
 ACTION_DIM = 8
 
-# docs/duck/01 §5-§6：默认站姿与归一化动作的名义目标范围（q_default ± action_scale）
+# 契约镜像：默认站姿与名义目标范围（q_default ± action_scale）；刻意硬编码，不从实现导入
 DEFAULT_JOINT_POS = np.array((0.0, -0.30, 0.60, -0.30) * 2)
 TARGET_LOW = np.array((-0.20, -0.65, 0.10, -0.55) * 2)
 TARGET_HIGH = np.array((0.20, 0.05, 1.10, -0.05) * 2)
 
-# docs/duck/02 §6-§9：奖励分项与初始权重
+# 契约镜像：奖励分项与初始权重；刻意硬编码，避免用实现自证
 REWARD_TERM_NAMES = (
     "tracking",
     "upright",
@@ -417,7 +417,7 @@ def test_reward_terms_follow_documented_formula(
     )
     reward, terms = env._compute_reward(action, state)
 
-    # docs/duck/02 §6 的公式，期望值独立计算；非零误差锁住两个 sigma
+    # 环境文档「奖励函数」的公式；期望值独立计算，非零误差锁住两个 sigma
     values = {
         "tracking": math.exp(-(((0.0 - 0.5) / 0.5) ** 2)),
         "upright": 0.9,
@@ -491,7 +491,7 @@ def test_info_reports_physical_diagnostics(
 
 def test_excessive_tilt_terminates_episode(env_factory: Callable[..., DuckEnv]) -> None:
     env = env_factory()
-    _place(env, pitch=math.radians(70))  # 超过 docs/duck/02 §7 的 60° 阈值
+    _place(env, pitch=math.radians(70))  # 超过环境文档「终止与超时」的 60° 阈值
 
     _, _, terminated, truncated, info = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
 
@@ -516,7 +516,7 @@ def test_torso_floor_contact_terminates_episode(
 
 def test_too_low_body_terminates_episode(env_factory: Callable[..., DuckEnv]) -> None:
     env = env_factory()
-    # 低于 docs/duck/02 §7 的 0.15 m 阈值，但躯干尚未触地，隔离 too_low 分支
+    # 低于环境文档「终止与超时」的 0.15 m 阈值，但躯干尚未触地，隔离 too_low 分支
     _place(env, z=0.10)
 
     _, _, terminated, truncated, info = env.step(np.zeros(ACTION_DIM, dtype=np.float32))

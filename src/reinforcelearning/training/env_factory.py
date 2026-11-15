@@ -1,6 +1,6 @@
-"""构造 ``Duck-v0`` 的训练/评估环境：环境创建的唯一入口。
+"""Duck-v0 训练与评估环境构造工厂。
 
-训练与评估必须共用同一套包装，否则观测和终止语义会不一致。
+环境创建的单一入口，确保训练与回放阶段的包装器堆叠（Monitor / VecEnv / Normalizer）一致。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import gymnasium
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
-import reinforcelearning.envs  # noqa: F401  导入即注册 Duck-v0
+import reinforcelearning.envs  # noqa: F401  导入以触发 Duck-v0 环境注册
 from reinforcelearning.envs.config import DuckEnvConfig
 from reinforcelearning.training.vec_normalize import DuckVecNormalize
 
@@ -24,11 +24,10 @@ def make_env(
     env_config: DuckEnvConfig | None = None,
     render_mode: str | None = None,
 ) -> Monitor:
-    """创建单个带回合统计的 Gymnasium 环境。"""
+    """构造单个被 Monitor 包装的 Gymnasium 环境实例。"""
     env = gymnasium.make(ENV_ID, config=env_config, render_mode=render_mode)
     env = Monitor(env)
-    # VecEnv 之后还会 reset，但这里的种子保证首个回合也可复现
-    env.reset(seed=seed)
+    env.reset(seed=seed)  # 确定初始种子，保障首回合确定性
     return env
 
 
@@ -42,11 +41,7 @@ def make_vec_env(
     norm_reward: bool = True,
     gamma: float = 0.99,
 ) -> VecEnv:
-    """创建 ``n_envs`` 个并行环境；``normalize=True`` 时套上 ``DuckVecNormalize``。
-
-    第一版用 ``DummyVecEnv``（同进程顺序执行）：MuJoCo 单步开销小，
-    多进程带来的序列化与调试成本不划算。需要吞吐时再换 ``SubprocVecEnv``。
-    """
+    """构造 DummyVecEnv 向量化环境，可选套载 DuckVecNormalize。"""
     if n_envs < 1:
         raise ValueError(f"n_envs 必须为 >= 1 的整数，实际 {n_envs}")
 
