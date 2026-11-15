@@ -18,3 +18,5 @@ runs/
 
 # Local ZCode workspace/agent configuration
 .zcode/
+
+.agents/
